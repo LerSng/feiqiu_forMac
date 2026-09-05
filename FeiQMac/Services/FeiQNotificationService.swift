@@ -5,7 +5,11 @@ protocol NotificationService: AnyObject {
     var onNotificationSelected: ((String) -> Void)? { get set }
 
     func requestAuthorization()
-    func notifyIncomingMessage(from sender: String, text: String, peerID: String)
+    func notifyIncomingMessage(
+        from sender: String,
+        text: String,
+        conversationID: String
+    )
 }
 
 final class FeiQNotificationService: NSObject, NotificationService, UNUserNotificationCenterDelegate {
@@ -22,13 +26,22 @@ final class FeiQNotificationService: NSObject, NotificationService, UNUserNotifi
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    func notifyIncomingMessage(from sender: String, text: String, peerID: String) {
+    func notifyIncomingMessage(
+        from sender: String,
+        text: String,
+        conversationID: String
+    ) {
         let content = UNMutableNotificationContent()
         let displaySender = sender.trimmingCharacters(in: .whitespacesAndNewlines)
         content.title = displaySender.isEmpty ? "收到新消息" : "\(displaySender) 发来消息"
         content.body = Self.previewText(text)
         content.sound = .default
-        content.userInfo = ["feiq.peerID": peerID]
+        content.userInfo = [
+            "feiq.conversationID": conversationID,
+            // Keep the old key so notifications created by older builds can
+            // still be opened after the app is upgraded.
+            "feiq.peerID": conversationID
+        ]
 
         let request = UNNotificationRequest(
             identifier: "feiq.incoming.\(UUID().uuidString)",
@@ -54,13 +67,14 @@ final class FeiQNotificationService: NSObject, NotificationService, UNUserNotifi
         defer { completionHandler() }
 
         guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
-              let peerID = response.notification.request.content.userInfo["feiq.peerID"] as? String,
-              !peerID.isEmpty else {
+              let conversationID = (response.notification.request.content.userInfo["feiq.conversationID"]
+                ?? response.notification.request.content.userInfo["feiq.peerID"]) as? String,
+              !conversationID.isEmpty else {
             return
         }
 
         DispatchQueue.main.async { [weak self] in
-            self?.onNotificationSelected?(peerID)
+            self?.onNotificationSelected?(conversationID)
         }
     }
 

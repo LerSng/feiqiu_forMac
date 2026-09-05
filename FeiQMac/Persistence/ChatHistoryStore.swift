@@ -17,12 +17,14 @@ private struct LegacyChatHistoryArchive: Decodable {
     let version: Int
     let messagesByPeer: [String: [ChatMessage]]
     let peers: [FeiQPeer]
+    let groups: [ChatGroup]
     let unreadCountsByPeer: [String: Int]
 
     private enum CodingKeys: String, CodingKey {
         case version
         case messagesByPeer
         case peers
+        case groups
         case unreadCountsByPeer
     }
 
@@ -34,6 +36,10 @@ private struct LegacyChatHistoryArchive: Decodable {
             forKey: .messagesByPeer
         )
         peers = try container.decode([FeiQPeer].self, forKey: .peers)
+        groups = try container.decodeIfPresent(
+            [ChatGroup].self,
+            forKey: .groups
+        ) ?? []
         unreadCountsByPeer = try container.decodeIfPresent(
             [String: Int].self,
             forKey: .unreadCountsByPeer
@@ -94,18 +100,24 @@ final class ChatHistoryStore {
             do {
                 try self.migrateLegacyJSONIfNeeded()
                 let peers = try self.fetchPeers()
-                let unreadCounts = Dictionary(
+                let groups = try self.fetchGroups()
+                var unreadCounts = Dictionary(
                     uniqueKeysWithValues: peers.compactMap { peer -> (String, Int)? in
                         guard peer.unreadCount > 0 else { return nil }
                         return (peer.peerID, peer.unreadCount)
                     }
                 )
+                for group in groups where group.unreadCount > 0 {
+                    unreadCounts[group.group.id] = group.unreadCount
+                }
                 let storedPeers = peers.map { $0.peer }
+                let storedGroups = groups.map { $0.group }
                 let totalMessageCount = try self.fetchTotalMessageCount()
                 completion(
                     .success(
                         ChatHistorySnapshot(
                             peers: storedPeers,
+                            groups: storedGroups,
                             unreadCountsByPeer: unreadCounts,
                             totalMessageCount: totalMessageCount
                         )
@@ -123,6 +135,24 @@ final class ChatHistoryStore {
         }
     }
 
+    func saveGroup(_ group: ChatGroup) {
+        enqueue {
+            try self.performTransaction {
+                try self.upsertGroup(group)
+            }
+        }
+    }
+
+    func deleteGroup(_ groupID: String) {
+        enqueue {
+            try self.performTransaction {
+                try self.deleteGroupMembers(groupID: groupID)
+                try self.deleteGroupConversation(groupID: groupID)
+                try self.deleteGroupRecord(groupID: groupID)
+            }
+        }
+    }
+
     func saveMessage(
         _ message: ChatMessage,
         for peer: FeiQPeer,
@@ -131,10 +161,27 @@ final class ChatHistoryStore {
         enqueue {
             try self.performTransaction {
                 try self.upsertPeer(peer)
-                try self.insertMessage(message, peerID: peer.id)
+                try self.insertMessage(message, conversationID: peer.id)
                 try self.updateUnreadCount(
                     unreadCount,
                     for: peer.id
+                )
+            }
+        }
+    }
+
+    func saveMessage(
+        _ message: ChatMessage,
+        for group: ChatGroup,
+        unreadCount: Int
+    ) {
+        enqueue {
+            try self.performTransaction {
+                try self.upsertGroup(group)
+                try self.insertMessage(message, conversationID: group.id)
+                try self.updateUnreadCount(
+                    unreadCount,
+                    for: group.id
                 )
             }
         }
@@ -225,8 +272,28 @@ final class ChatHistoryStore {
                     group_name TEXT NOT NULL DEFAULT '',
                     last_seen REAL NOT NULL DEFAULT 0,
                     is_online INTEGER NOT NULL DEFAULT 0,
-                    unread_count INTEGER NOT NULL DEFAULT 0
+                    unread_count INTEGER NOT NULL DEFAULT 0,
+                    conversation_kind TEXT NOT NULL DEFAULT 'peer'
                 );
+
+                CREATE TABLE IF NOT EXISTS chat_groups (
+                    group_id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    owner_name TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_group_members (
+                    group_id TEXT NOT NULL,
+                    peer_id TEXT NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(group_id, peer_id),
+                    FOREIGN KEY(group_id) REFERENCES chat_groups(group_id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_group_members_peer
+                    ON chat_group_members(peer_id);
 
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY NOT NULL,
@@ -249,10 +316,39 @@ final class ChatHistoryStore {
                 );
                 """
             )
+            try ensureConversationKindColumn()
         } catch {
             initializationError = error
             sqlite3_close(database)
             self.database = nil
+        }
+    }
+
+    private func ensureConversationKindColumn() throws {
+        var hasConversationKind = false
+        do {
+            let statement = try prepare("PRAGMA table_info(conversations)")
+            defer { sqlite3_finalize(statement) }
+
+            while true {
+                let result = sqlite3_step(statement)
+                if result == SQLITE_DONE {
+                    break
+                }
+                guard result == SQLITE_ROW else {
+                    throw sqliteError()
+                }
+                if columnText(statement, 1) == "conversation_kind" {
+                    hasConversationKind = true
+                    break
+                }
+            }
+        }
+
+        if !hasConversationKind {
+            try execute(
+                "ALTER TABLE conversations ADD COLUMN conversation_kind TEXT NOT NULL DEFAULT 'peer'"
+            )
         }
     }
 
@@ -278,23 +374,29 @@ final class ChatHistoryStore {
 
         try performTransaction {
             var peerIDs = Set<String>()
+            var groupIDs = Set<String>()
             for peer in archive.peers {
                 try upsertPeer(peer)
                 peerIDs.insert(peer.id)
             }
 
+            for group in archive.groups {
+                try upsertGroup(group)
+                groupIDs.insert(group.id)
+            }
+
             for (peerID, messages) in archive.messagesByPeer {
-                if !peerIDs.contains(peerID) {
+                if !peerIDs.contains(peerID), !groupIDs.contains(peerID) {
                     try insertPlaceholderPeer(withID: peerID)
                     peerIDs.insert(peerID)
                 }
                 for message in messages {
-                    try insertMessage(message, peerID: peerID)
+                    try insertMessage(message, conversationID: peerID)
                 }
             }
 
             for (peerID, count) in archive.unreadCountsByPeer where count > 0 {
-                if !peerIDs.contains(peerID) {
+                if !peerIDs.contains(peerID), !groupIDs.contains(peerID) {
                     try insertPlaceholderPeer(withID: peerID)
                     peerIDs.insert(peerID)
                 }
@@ -325,6 +427,7 @@ final class ChatHistoryStore {
             SELECT peer_id, name, host_name, ip_address, group_name,
                    last_seen, is_online, unread_count
             FROM conversations
+            WHERE conversation_kind = 'peer'
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -354,6 +457,69 @@ final class ChatHistoryStore {
                     peer: peer,
                     peerID: peerID,
                     unreadCount: Int(sqlite3_column_int(statement, 7))
+                )
+            )
+        }
+        return result
+    }
+
+    private func fetchGroups() throws -> [(group: ChatGroup, unreadCount: Int)] {
+        let statement = try prepare(
+            """
+            SELECT g.group_id, g.name, g.owner_name, g.created_at,
+                   COALESCE(c.unread_count, 0)
+            FROM chat_groups AS g
+            LEFT JOIN conversations AS c ON c.peer_id = g.group_id
+            ORDER BY g.created_at ASC, g.group_id ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var result: [(group: ChatGroup, unreadCount: Int)] = []
+        while true {
+            let stepResult = sqlite3_step(statement)
+            if stepResult == SQLITE_DONE {
+                break
+            }
+            guard stepResult == SQLITE_ROW else {
+                throw sqliteError()
+            }
+
+            let groupID = columnText(statement, 0)
+            let memberStatement = try prepare(
+                """
+                SELECT peer_id
+                FROM chat_group_members
+                WHERE group_id = ?
+                ORDER BY sort_order ASC, peer_id ASC
+                """
+            )
+            defer { sqlite3_finalize(memberStatement) }
+            try bindText(groupID, at: 1, in: memberStatement)
+
+            var memberIDs: [String] = []
+            while true {
+                let memberStep = sqlite3_step(memberStatement)
+                if memberStep == SQLITE_DONE {
+                    break
+                }
+                guard memberStep == SQLITE_ROW else {
+                    throw sqliteError()
+                }
+                memberIDs.append(columnText(memberStatement, 0))
+            }
+
+            let group = ChatGroup(
+                id: groupID,
+                name: columnText(statement, 1),
+                memberIDs: memberIDs,
+                ownerName: columnText(statement, 2),
+                createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
+            )
+            result.append(
+                (
+                    group: group,
+                    unreadCount: Int(sqlite3_column_int(statement, 4))
                 )
             )
         }
@@ -450,16 +616,17 @@ final class ChatHistoryStore {
             """
             INSERT INTO conversations (
                 peer_id, name, host_name, ip_address, group_name,
-                last_seen, is_online, unread_count
+                last_seen, is_online, unread_count, conversation_kind
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'peer')
             ON CONFLICT(peer_id) DO UPDATE SET
                 name = excluded.name,
                 host_name = excluded.host_name,
                 ip_address = excluded.ip_address,
                 group_name = excluded.group_name,
                 last_seen = excluded.last_seen,
-                is_online = excluded.is_online
+                is_online = excluded.is_online,
+                conversation_kind = 'peer'
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -471,6 +638,88 @@ final class ChatHistoryStore {
         try bindText(peer.group, at: 5, in: statement)
         try bindDouble(peer.lastSeen.timeIntervalSince1970, at: 6, in: statement)
         try bindInt32(peer.isOnline ? 1 : 0, at: 7, in: statement)
+        try stepDone(statement)
+    }
+
+    private func upsertGroup(_ group: ChatGroup) throws {
+        let conversationStatement = try prepare(
+            """
+            INSERT INTO conversations (
+                peer_id, name, host_name, ip_address, group_name,
+                last_seen, is_online, unread_count, conversation_kind
+            )
+            VALUES (?, ?, '', '', '', ?, 0, 0, 'group')
+            ON CONFLICT(peer_id) DO UPDATE SET
+                name = excluded.name,
+                last_seen = excluded.last_seen,
+                conversation_kind = 'group'
+            """
+        )
+        defer { sqlite3_finalize(conversationStatement) }
+        try bindText(group.id, at: 1, in: conversationStatement)
+        try bindText(group.displayName, at: 2, in: conversationStatement)
+        try bindDouble(group.createdAt.timeIntervalSince1970, at: 3, in: conversationStatement)
+        try stepDone(conversationStatement)
+
+        let groupStatement = try prepare(
+            """
+            INSERT INTO chat_groups(group_id, name, owner_name, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(group_id) DO UPDATE SET
+                name = excluded.name,
+                owner_name = excluded.owner_name,
+                created_at = excluded.created_at
+            """
+        )
+        defer { sqlite3_finalize(groupStatement) }
+        try bindText(group.id, at: 1, in: groupStatement)
+        try bindText(group.displayName, at: 2, in: groupStatement)
+        try bindText(group.ownerName, at: 3, in: groupStatement)
+        try bindDouble(group.createdAt.timeIntervalSince1970, at: 4, in: groupStatement)
+        try stepDone(groupStatement)
+
+        try deleteGroupMembers(groupID: group.id)
+        for (index, memberID) in group.memberIDs.enumerated() {
+            let memberStatement = try prepare(
+                """
+                INSERT INTO chat_group_members(group_id, peer_id, sort_order)
+                VALUES (?, ?, ?)
+                ON CONFLICT(group_id, peer_id) DO UPDATE SET
+                    sort_order = excluded.sort_order
+                """
+            )
+            defer { sqlite3_finalize(memberStatement) }
+            try bindText(group.id, at: 1, in: memberStatement)
+            try bindText(memberID, at: 2, in: memberStatement)
+            try bindInt32(Int32(index), at: 3, in: memberStatement)
+            try stepDone(memberStatement)
+        }
+    }
+
+    private func deleteGroupMembers(groupID: String) throws {
+        let statement = try prepare(
+            "DELETE FROM chat_group_members WHERE group_id = ?"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bindText(groupID, at: 1, in: statement)
+        try stepDone(statement)
+    }
+
+    private func deleteGroupConversation(groupID: String) throws {
+        let statement = try prepare(
+            "DELETE FROM conversations WHERE peer_id = ? AND conversation_kind = 'group'"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bindText(groupID, at: 1, in: statement)
+        try stepDone(statement)
+    }
+
+    private func deleteGroupRecord(groupID: String) throws {
+        let statement = try prepare(
+            "DELETE FROM chat_groups WHERE group_id = ?"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bindText(groupID, at: 1, in: statement)
         try stepDone(statement)
     }
 
@@ -487,7 +736,7 @@ final class ChatHistoryStore {
         try upsertPeer(peer)
     }
 
-    private func insertMessage(_ message: ChatMessage, peerID: String) throws {
+    private func insertMessage(_ message: ChatMessage, conversationID: String) throws {
         let statement = try prepare(
             """
             INSERT OR IGNORE INTO messages (
@@ -499,7 +748,7 @@ final class ChatHistoryStore {
         defer { sqlite3_finalize(statement) }
 
         try bindText(message.id.uuidString, at: 1, in: statement)
-        try bindText(peerID, at: 2, in: statement)
+        try bindText(conversationID, at: 2, in: statement)
         try bindText(message.direction.rawValue, at: 3, in: statement)
         try bindText(message.text, at: 4, in: statement)
         try bindText(message.senderName, at: 5, in: statement)

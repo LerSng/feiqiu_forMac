@@ -1,0 +1,42 @@
+# macOS 临时文件
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode 用户配置与本地工程状态
+**/xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Xcode 构建产物
+build/
+DerivedData/
+**/.build/
+*.build/
+*.xcarchive/
+*.dSYM/
+
+# Swift Package Manager / 本地依赖缓存
+.swiftpm/
+Packages/
+
+# CodeGraph 本地索引数据库
+.codegraph/
+
+# 应用运行时产生的本地聊天记录和 SQLite 临时文件
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+
+# 日志、临时文件和编辑器交换文件
+*.log
+*.tmp
+*.swp
+*.swo
+
+# 常见 IDE 本地配置
+.idea/
+.vscode/

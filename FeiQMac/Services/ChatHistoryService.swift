@@ -18,9 +18,16 @@ protocol ChatHistoryService: AnyObject {
         completion: @escaping (Result<ChatHistoryPage, Error>) -> Void
     )
     func savePeer(_ peer: FeiQPeer)
+    func saveGroup(_ group: ChatGroup)
+    func deleteGroup(_ groupID: String)
     func saveMessage(
         _ message: ChatMessage,
         for peer: FeiQPeer,
+        unreadCount: Int
+    )
+    func saveMessage(
+        _ message: ChatMessage,
+        for group: ChatGroup,
         unreadCount: Int
     )
     func setUnreadCount(_ count: Int, for peerID: String)
@@ -99,6 +106,14 @@ final class SQLiteChatHistoryService: ChatHistoryService {
         store.savePeer(peer)
     }
 
+    func saveGroup(_ group: ChatGroup) {
+        store.saveGroup(group)
+    }
+
+    func deleteGroup(_ groupID: String) {
+        store.deleteGroup(groupID)
+    }
+
     func saveMessage(
         _ message: ChatMessage,
         for peer: FeiQPeer,
@@ -107,6 +122,18 @@ final class SQLiteChatHistoryService: ChatHistoryService {
         store.saveMessage(
             message,
             for: peer,
+            unreadCount: unreadCount
+        )
+    }
+
+    func saveMessage(
+        _ message: ChatMessage,
+        for group: ChatGroup,
+        unreadCount: Int
+    ) {
+        store.saveMessage(
+            message,
+            for: group,
             unreadCount: unreadCount
         )
     }

@@ -11,8 +11,46 @@ struct AppSettings: Equatable, Sendable {
     var chatLoadAnimationMode: ChatLoadAnimationMode
 }
 
+struct ChatGroup: Identifiable, Hashable, Codable, Sendable {
+    let id: String
+    var name: String
+    var memberIDs: [String]
+    var ownerName: String
+    var createdAt: Date
+
+    init(
+        id: String = "group:\(UUID().uuidString)",
+        name: String,
+        memberIDs: [String],
+        ownerName: String,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        var uniqueMemberIDs: [String] = []
+        for memberID in memberIDs where !memberID.isEmpty {
+            if !uniqueMemberIDs.contains(memberID) {
+                uniqueMemberIDs.append(memberID)
+            }
+        }
+        self.memberIDs = uniqueMemberIDs
+        self.ownerName = ownerName
+        self.createdAt = createdAt
+    }
+
+    var displayName: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "未命名群聊" : trimmed
+    }
+
+    var memberCount: Int {
+        memberIDs.count
+    }
+}
+
 struct ChatHistorySnapshot: Sendable {
     let peers: [FeiQPeer]
+    let groups: [ChatGroup]
     let unreadCountsByPeer: [String: Int]
     let totalMessageCount: Int
 }
@@ -25,9 +63,10 @@ struct ChatHistoryPage: Sendable {
 enum ChatRepositoryEvent: Sendable {
     case peerUpdated(FeiQPeer)
     case messageReceived(message: ChatMessage, peer: FeiQPeer)
+    case groupMessageReceived(message: ChatMessage, group: ChatGroup)
     case networkStateChanged(Bool)
     case log(String)
-    case notificationSelected(peerID: String)
+    case notificationSelected(conversationID: String)
 }
 
 enum ChatLoadAnimationMode: String, CaseIterable, Identifiable, Sendable {

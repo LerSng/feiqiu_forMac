@@ -24,6 +24,13 @@
 		A10000000000000000000063 /* ChatHistoryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000073 /* ChatHistoryService.swift */; };
 		A10000000000000000000064 /* FeiQNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000074 /* FeiQNotificationService.swift */; };
 		A10000000000000000000065 /* UserDefaultsSettingsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000075 /* UserDefaultsSettingsService.swift */; };
+		A10000000000000000000066 /* UIStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000076 /* UIStyle.swift */; };
+		A10000000000000000000067 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000077 /* SidebarView.swift */; };
+		A10000000000000000000068 /* AvatarViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000078 /* AvatarViews.swift */; };
+		A10000000000000000000069 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000079 /* ChatView.swift */; };
+		A1000000000000000000006A /* EmojiPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000007A /* EmojiPickerView.swift */; };
+		A1000000000000000000006B /* GroupEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000007B /* GroupEditorView.swift */; };
+		A1000000000000000000006C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000007C /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -46,6 +53,13 @@
 		A10000000000000000000073 /* ChatHistoryService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatHistoryService.swift; sourceTree = "<group>"; };
 		A10000000000000000000074 /* FeiQNotificationService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FeiQNotificationService.swift; sourceTree = "<group>"; };
 		A10000000000000000000075 /* UserDefaultsSettingsService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = UserDefaultsSettingsService.swift; sourceTree = "<group>"; };
+		A10000000000000000000076 /* UIStyle.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = UIStyle.swift; sourceTree = "<group>"; };
+		A10000000000000000000077 /* SidebarView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		A10000000000000000000078 /* AvatarViews.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AvatarViews.swift; sourceTree = "<group>"; };
+		A10000000000000000000079 /* ChatView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		A1000000000000000000007A /* EmojiPickerView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = EmojiPickerView.swift; sourceTree = "<group>"; };
+		A1000000000000000000007B /* GroupEditorView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = GroupEditorView.swift; sourceTree = "<group>"; };
+		A1000000000000000000007C /* SettingsView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -161,6 +175,13 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000031 /* ContentView.swift */,
+				A10000000000000000000076 /* UIStyle.swift */,
+				A10000000000000000000077 /* SidebarView.swift */,
+				A10000000000000000000078 /* AvatarViews.swift */,
+				A10000000000000000000079 /* ChatView.swift */,
+				A1000000000000000000007A /* EmojiPickerView.swift */,
+				A1000000000000000000007B /* GroupEditorView.swift */,
+				A1000000000000000000007C /* SettingsView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -266,6 +287,13 @@
 				A10000000000000000000063 /* ChatHistoryService.swift in Sources */,
 				A10000000000000000000064 /* FeiQNotificationService.swift in Sources */,
 				A10000000000000000000065 /* UserDefaultsSettingsService.swift in Sources */,
+				A10000000000000000000066 /* UIStyle.swift in Sources */,
+				A10000000000000000000067 /* SidebarView.swift in Sources */,
+				A10000000000000000000068 /* AvatarViews.swift in Sources */,
+				A10000000000000000000069 /* ChatView.swift in Sources */,
+				A1000000000000000000006A /* EmojiPickerView.swift in Sources */,
+				A1000000000000000000006B /* GroupEditorView.swift in Sources */,
+				A1000000000000000000006C /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -13,16 +13,33 @@ protocol ChatRepository: AnyObject {
         to peer: FeiQPeer,
         unreadCount: Int
     )
+    func sendGroupMessage(
+        _ message: ChatMessage,
+        to group: ChatGroup,
+        members: [FeiQPeer]
+    )
     func persistMessage(
         _ message: ChatMessage,
         for peer: FeiQPeer,
         unreadCount: Int
     )
-    func notifyIncomingMessage(text: String, from peer: FeiQPeer)
+    func persistGroupMessage(
+        _ message: ChatMessage,
+        for group: ChatGroup,
+        unreadCount: Int
+    )
+    func notifyIncomingMessage(
+        text: String,
+        from sender: String,
+        conversationID: String
+    )
     func refreshDiscovery()
     func setUnreadCount(_ count: Int, for peerID: String)
     func savePeer(_ peer: FeiQPeer)
+    func saveGroup(_ group: ChatGroup)
+    func deleteGroup(_ groupID: String)
     func restorePeers(_ peers: [FeiQPeer])
+    func restoreGroups(_ groups: [ChatGroup])
     func markOfflinePeers(before cutoff: Date)
 
     func loadSnapshot(
@@ -53,6 +70,7 @@ final class DefaultChatRepository: ChatRepository {
         groupName: ""
     )
     private var peersByID: [String: FeiQPeer] = [:]
+    private var groupsByID: [String: ChatGroup] = [:]
 
     var onEvent: ((ChatRepositoryEvent) -> Void)?
 
@@ -79,7 +97,7 @@ final class DefaultChatRepository: ChatRepository {
             self?.emit(.networkStateChanged(running))
         }
         notificationService.onNotificationSelected = { [weak self] peerID in
-            self?.emit(.notificationSelected(peerID: peerID))
+            self?.emit(.notificationSelected(conversationID: peerID))
         }
     }
 
@@ -128,6 +146,40 @@ final class DefaultChatRepository: ChatRepository {
         )
     }
 
+    func sendGroupMessage(
+        _ message: ChatMessage,
+        to group: ChatGroup,
+        members: [FeiQPeer]
+    ) {
+        persistGroupMessage(
+            message,
+            for: group,
+            unreadCount: 0
+        )
+
+        let wireText = FeiQMessageFormatter.wireText(message.text)
+        var sentCount = 0
+        var sentAddresses = Set<String>()
+        for member in members where member.isOnline {
+            let address = member.ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !address.isEmpty, sentAddresses.insert(address).inserted else {
+                continue
+            }
+            networkService.sendText(
+                wireText,
+                to: address,
+                recipientName: group.displayName
+            )
+            sentCount += 1
+        }
+
+        if sentCount == 0 {
+            emit(.log("群聊「" + group.displayName + "」没有在线成员，未发送消息"))
+        } else {
+            emit(.log("群聊「" + group.displayName + "」已按飞秋兼容模式发送给 " + String(sentCount) + " 位成员"))
+        }
+    }
+
     func persistMessage(
         _ message: ChatMessage,
         for peer: FeiQPeer,
@@ -140,11 +192,27 @@ final class DefaultChatRepository: ChatRepository {
         )
     }
 
-    func notifyIncomingMessage(text: String, from peer: FeiQPeer) {
+    func persistGroupMessage(
+        _ message: ChatMessage,
+        for group: ChatGroup,
+        unreadCount: Int
+    ) {
+        historyService.saveMessage(
+            message,
+            for: group,
+            unreadCount: unreadCount
+        )
+    }
+
+    func notifyIncomingMessage(
+        text: String,
+        from sender: String,
+        conversationID: String
+    ) {
         notificationService.notifyIncomingMessage(
-            from: peer.displayName,
+            from: sender,
             text: text,
-            peerID: peer.id
+            conversationID: conversationID
         )
     }
 
@@ -159,6 +227,20 @@ final class DefaultChatRepository: ChatRepository {
         historyService.savePeer(peer)
     }
 
+    func saveGroup(_ group: ChatGroup) {
+        stateQueue.sync {
+            groupsByID[group.id] = group
+        }
+        historyService.saveGroup(group)
+    }
+
+    func deleteGroup(_ groupID: String) {
+        stateQueue.sync {
+            groupsByID.removeValue(forKey: groupID)
+        }
+        historyService.deleteGroup(groupID)
+    }
+
     func restorePeers(_ peers: [FeiQPeer]) {
         stateQueue.sync {
             for peer in peers {
@@ -166,6 +248,14 @@ final class DefaultChatRepository: ChatRepository {
                     continue
                 }
                 peersByID[peer.id] = peer
+            }
+        }
+    }
+
+    func restoreGroups(_ groups: [ChatGroup]) {
+        stateQueue.sync {
+            for group in groups {
+                groupsByID[group.id] = group
             }
         }
     }
@@ -283,6 +373,30 @@ final class DefaultChatRepository: ChatRepository {
                     peer: peer
                 )
             )
+
+            let matchingGroups = stateQueue.sync {
+                groupsByID.values
+                    .filter { $0.memberIDs.contains(peer.id) }
+                    .sorted { $0.createdAt < $1.createdAt }
+            }
+            for group in matchingGroups {
+                // A ChatMessage ID is globally unique in the SQLite store.
+                // Each group conversation therefore receives its own copy of
+                // the incoming message instead of reusing the direct-chat ID.
+                let groupMessage = ChatMessage(
+                    direction: incomingMessage.direction,
+                    text: incomingMessage.text,
+                    senderName: incomingMessage.senderName,
+                    recipientName: group.displayName,
+                    date: incomingMessage.date
+                )
+                emit(
+                    .groupMessageReceived(
+                        message: groupMessage,
+                        group: group
+                    )
+                )
+            }
 
         case .receiveMessage, .readMessage, .deleteMessage, .answerReadMessage,
              .broadcastAbsence, .broadcastNotify, .broadcastIsGetList,

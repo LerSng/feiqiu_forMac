@@ -5,6 +5,7 @@ import Foundation
 @MainActor
 final class ChatViewModel: ObservableObject {
     @Published private(set) var peers: [FeiQPeer] = []
+    @Published private(set) var groups: [ChatGroup] = []
     @Published private(set) var messagesByPeer: [String: [ChatMessage]] = [:]
     @Published private(set) var unreadCountsByPeer: [String: Int] = [:]
     @Published private(set) var isLoadingMessages = false
@@ -13,6 +14,7 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var isRunning = false
 
     @Published var selectedPeerID: String?
+    @Published var selectedGroupID: String?
     @Published var draft = ""
     @Published var searchText = ""
     @Published var nickname: String
@@ -21,6 +23,8 @@ final class ChatViewModel: ObservableObject {
     @Published var chatLoadAnimationMode: ChatLoadAnimationMode
     @Published var showingSettings = false
     @Published var showingLogs = false
+    @Published var showingGroupEditor = false
+    @Published var editingGroupID: String?
 
     private let repository: ChatRepository
     private let settingsRepository: AppSettingsRepository
@@ -31,8 +35,18 @@ final class ChatViewModel: ObservableObject {
     private static let inMemoryMessageLimit = 240
 
     var selectedPeer: FeiQPeer? {
+        guard selectedGroupID == nil else { return nil }
         guard let selectedPeerID else { return nil }
         return peers.first(where: { $0.id == selectedPeerID })
+    }
+
+    var selectedGroup: ChatGroup? {
+        guard let selectedGroupID else { return nil }
+        return groups.first(where: { $0.id == selectedGroupID })
+    }
+
+    var selectedConversationID: String? {
+        selectedGroupID ?? selectedPeerID
     }
 
     var onlinePeerCount: Int {
@@ -47,6 +61,19 @@ final class ChatViewModel: ObservableObject {
                 || $0.hostName.localizedCaseInsensitiveContains(query)
                 || $0.ipAddress.localizedCaseInsensitiveContains(query)
                 || $0.group.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var filteredGroups: [ChatGroup] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return groups }
+        return groups.filter {
+            $0.displayName.localizedCaseInsensitiveContains(query)
+                || $0.ownerName.localizedCaseInsensitiveContains(query)
+                || $0.memberIDs.contains { memberID in
+                    peers.first(where: { $0.id == memberID })?.displayName
+                        .localizedCaseInsensitiveContains(query) == true
+                }
         }
     }
 
@@ -86,30 +113,97 @@ final class ChatViewModel: ObservableObject {
         repository.stop()
     }
 
-    func messages(for peerID: String) -> [ChatMessage] {
-        messagesByPeer[peerID] ?? []
+    func messages(for conversationID: String) -> [ChatMessage] {
+        messagesByPeer[conversationID] ?? []
     }
 
-    func unreadCount(for peerID: String) -> Int {
-        max(0, unreadCountsByPeer[peerID] ?? 0)
+    func unreadCount(for conversationID: String) -> Int {
+        max(0, unreadCountsByPeer[conversationID] ?? 0)
     }
 
     func selectPeer(_ peerID: String?) {
-        activatePeer(peerID, markRead: true)
+        activateConversation(peerID: peerID, groupID: nil, markRead: true)
     }
 
-    func markMessagesRead(for peerID: String) {
-        guard unreadCount(for: peerID) > 0 else { return }
-        unreadCountsByPeer[peerID] = nil
-        repository.setUnreadCount(0, for: peerID)
+    func selectGroup(_ groupID: String?) {
+        activateConversation(peerID: nil, groupID: groupID, markRead: true)
+    }
+
+    func markMessagesRead(for conversationID: String) {
+        guard unreadCount(for: conversationID) > 0 else { return }
+        unreadCountsByPeer[conversationID] = nil
+        repository.setUnreadCount(0, for: conversationID)
+    }
+
+    func group(withID groupID: String) -> ChatGroup? {
+        groups.first(where: { $0.id == groupID })
+    }
+
+    func members(for groupID: String) -> [FeiQPeer] {
+        guard let group = group(withID: groupID) else { return [] }
+        return group.memberIDs.compactMap { memberID in
+            peers.first(where: { $0.id == memberID })
+        }
+    }
+
+    func openGroupEditor(for groupID: String? = nil) {
+        editingGroupID = groupID
+        showingGroupEditor = true
+    }
+
+    func saveGroup(name: String, memberIDs: [String], editingGroupID: String?) {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedName.isEmpty else { return }
+
+        let normalizedMemberIDs = memberIDs.filter { memberID in
+            peers.contains(where: { $0.id == memberID })
+        }
+        guard !normalizedMemberIDs.isEmpty else { return }
+
+        let group: ChatGroup
+        if let editingGroupID,
+           let existingGroup = group(withID: editingGroupID) {
+            group = ChatGroup(
+                id: existingGroup.id,
+                name: normalizedName,
+                memberIDs: normalizedMemberIDs,
+                ownerName: existingGroup.ownerName,
+                createdAt: existingGroup.createdAt
+            )
+            if let index = groups.firstIndex(where: { $0.id == existingGroup.id }) {
+                groups[index] = group
+            }
+        } else {
+            group = ChatGroup(
+                name: normalizedName,
+                memberIDs: normalizedMemberIDs,
+                ownerName: nickname
+            )
+            groups.append(group)
+        }
+
+        sortGroups()
+        repository.saveGroup(group)
+        selectGroup(group.id)
+        editingGroupID = nil
+        showingGroupEditor = false
+    }
+
+    func deleteGroup(_ groupID: String) {
+        if selectedGroupID == groupID {
+            selectPeer(nil)
+        }
+        groups.removeAll { $0.id == groupID }
+        unreadCountsByPeer.removeValue(forKey: groupID)
+        repository.deleteGroup(groupID)
     }
 
     func loadEarlierMessages(
-        for peerID: String,
+        for conversationID: String,
         before message: ChatMessage,
         completion: (() -> Void)? = nil
     ) {
-        guard selectedPeerID == peerID,
+        guard selectedConversationID == conversationID,
               hasMoreMessages,
               !isLoadingMessages else {
             return
@@ -118,21 +212,21 @@ final class ChatViewModel: ObservableObject {
         isLoadingMessages = true
         let requestGeneration = historyRequestGeneration
         repository.loadEarlierMessages(
-            for: peerID,
+            for: conversationID,
             before: message,
             limit: Self.messagePageSize
         ) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self,
-                      self.selectedPeerID == peerID,
+                      self.selectedConversationID == conversationID,
                       self.historyRequestGeneration == requestGeneration else {
                     return
                 }
 
                 switch result {
                 case .success(let page):
-                    let currentMessages = self.messagesByPeer[peerID] ?? []
-                    self.messagesByPeer[peerID] = self.mergeMessages(
+                    let currentMessages = self.messagesByPeer[conversationID] ?? []
+                    self.messagesByPeer[conversationID] = self.mergeMessages(
                         page.messages,
                         with: currentMessages
                     )
@@ -144,7 +238,7 @@ final class ChatViewModel: ObservableObject {
 
                 DispatchQueue.main.async { [weak self] in
                     guard let self,
-                          self.selectedPeerID == peerID,
+                          self.selectedConversationID == conversationID,
                           self.historyRequestGeneration == requestGeneration else {
                         return
                     }
@@ -187,22 +281,39 @@ final class ChatViewModel: ObservableObject {
     }
 
     func sendDraft() {
-        guard let peer = selectedPeer else { return }
         let displayText = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !displayText.isEmpty else { return }
 
-        let message = ChatMessage(
-            direction: .outgoing,
-            text: displayText,
-            senderName: nickname,
-            recipientName: peer.displayName
-        )
-        appendMessageToCurrentConversation(message, peerID: peer.id)
-        repository.sendMessage(
-            message,
-            to: peer,
-            unreadCount: unreadCount(for: peer.id)
-        )
+        if let peer = selectedPeer {
+            let message = ChatMessage(
+                direction: .outgoing,
+                text: displayText,
+                senderName: nickname,
+                recipientName: peer.displayName
+            )
+            appendMessageToCurrentConversation(message, conversationID: peer.id)
+            repository.sendMessage(
+                message,
+                to: peer,
+                unreadCount: unreadCount(for: peer.id)
+            )
+        } else if let group = selectedGroup {
+            let message = ChatMessage(
+                direction: .outgoing,
+                text: displayText,
+                senderName: nickname,
+                recipientName: group.displayName
+            )
+            appendMessageToCurrentConversation(message, conversationID: group.id)
+            repository.sendGroupMessage(
+                message,
+                to: group,
+                members: members(for: group.id)
+            )
+        } else {
+            return
+        }
+
         draft = ""
     }
 
@@ -226,13 +337,13 @@ final class ChatViewModel: ObservableObject {
         switch event {
         case .peerUpdated(let peer):
             mergePeer(peer)
-            if selectedPeerID == nil, peer.isOnline {
-                activatePeer(peer.id, markRead: false)
+            if selectedConversationID == nil, peer.isOnline {
+                selectPeer(peer.id)
             }
 
         case .messageReceived(let message, let peer):
             let isViewing = isViewingConversation(for: peer)
-            appendMessageToCurrentConversation(message, peerID: peer.id)
+            appendMessageToCurrentConversation(message, conversationID: peer.id)
             if !isViewing {
                 unreadCountsByPeer[peer.id, default: 0] += 1
             }
@@ -241,8 +352,43 @@ final class ChatViewModel: ObservableObject {
                 for: peer,
                 unreadCount: unreadCount(for: peer.id)
             )
+            let belongsToGroup = groups.contains { group in
+                group.memberIDs.contains(peer.id)
+            }
+            if !isViewing, !belongsToGroup {
+                repository.notifyIncomingMessage(
+                    text: message.text,
+                    from: peer.displayName,
+                    conversationID: peer.id
+                )
+            }
+
+        case .groupMessageReceived(let message, let group):
+            if !groups.contains(where: { $0.id == group.id }) {
+                groups.append(group)
+                sortGroups()
+            }
+
+            let isViewing = NSApp.isActive && selectedGroupID == group.id
+            appendMessageToCurrentConversation(
+                message,
+                conversationID: group.id
+            )
             if !isViewing {
-                repository.notifyIncomingMessage(text: message.text, from: peer)
+                unreadCountsByPeer[group.id, default: 0] += 1
+            }
+            repository.persistGroupMessage(
+                message,
+                for: group,
+                unreadCount: unreadCount(for: group.id)
+            )
+            if !isViewing {
+                let sender = message.senderName.isEmpty ? group.displayName : message.senderName
+                repository.notifyIncomingMessage(
+                    text: message.text,
+                    from: group.displayName + " · " + sender,
+                    conversationID: group.id
+                )
             }
 
         case .networkStateChanged(let running):
@@ -251,51 +397,64 @@ final class ChatViewModel: ObservableObject {
         case .log(let message):
             appendLog(message)
 
-        case .notificationSelected(let peerID):
-            selectPeer(peerID)
+        case .notificationSelected(let conversationID):
+            selectConversation(conversationID)
         }
     }
 
-    private func activatePeer(_ peerID: String?, markRead: Bool) {
-        if selectedPeerID == peerID {
-            if markRead, let peerID {
-                markMessagesRead(for: peerID)
+    private func selectConversation(_ conversationID: String) {
+        if groups.contains(where: { $0.id == conversationID }) {
+            selectGroup(conversationID)
+        } else {
+            selectPeer(conversationID)
+        }
+    }
+
+    private func activateConversation(
+        peerID: String?,
+        groupID: String?,
+        markRead: Bool
+    ) {
+        if selectedPeerID == peerID, selectedGroupID == groupID {
+            if markRead, let conversationID = groupID ?? peerID {
+                markMessagesRead(for: conversationID)
             }
             return
         }
 
         selectedPeerID = peerID
+        selectedGroupID = groupID
         messagesByPeer.removeAll()
         historyRequestGeneration += 1
         isLoadingMessages = false
         hasMoreMessages = false
 
-        guard let peerID else { return }
+        guard let conversationID = groupID ?? peerID else { return }
 
         if markRead {
-            markMessagesRead(for: peerID)
+            markMessagesRead(for: conversationID)
         }
-        loadRecentMessages(for: peerID)
+        loadRecentMessages(for: conversationID)
     }
 
-    private func loadRecentMessages(for peerID: String) {
+    private func loadRecentMessages(for conversationID: String) {
         isLoadingMessages = true
         let requestGeneration = historyRequestGeneration
         repository.loadRecentMessages(
-            for: peerID,
+            for: conversationID,
             limit: Self.messagePageSize
         ) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self,
-                      self.selectedPeerID == peerID,
+                      self.selectedConversationID == conversationID,
                       self.historyRequestGeneration == requestGeneration else {
                     return
                 }
 
                 switch result {
                 case .success(let page):
-                    let liveMessages = self.messagesByPeer[peerID] ?? []
-                    self.messagesByPeer[peerID] = self.mergeMessages(
+                    let liveMessages = self.messagesByPeer[conversationID] ?? []
+                    self.messagesByPeer[conversationID] = self.mergeMessages(
                         page.messages,
                         with: liveMessages
                     )
@@ -306,7 +465,7 @@ final class ChatViewModel: ObservableObject {
 
                 DispatchQueue.main.async { [weak self] in
                     guard let self,
-                          self.selectedPeerID == peerID,
+                          self.selectedConversationID == conversationID,
                           self.historyRequestGeneration == requestGeneration else {
                         return
                     }
@@ -318,11 +477,11 @@ final class ChatViewModel: ObservableObject {
 
     private func appendMessageToCurrentConversation(
         _ message: ChatMessage,
-        peerID: String
+        conversationID: String
     ) {
-        guard selectedPeerID == peerID else { return }
+        guard selectedConversationID == conversationID else { return }
 
-        var currentMessages = messagesByPeer[peerID] ?? []
+        var currentMessages = messagesByPeer[conversationID] ?? []
         currentMessages.append(message)
         if currentMessages.count > Self.inMemoryMessageLimit {
             currentMessages.removeFirst(
@@ -330,7 +489,7 @@ final class ChatViewModel: ObservableObject {
             )
             hasMoreMessages = true
         }
-        messagesByPeer[peerID] = currentMessages
+        messagesByPeer[conversationID] = currentMessages
     }
 
     private func mergeMessages(
@@ -364,6 +523,9 @@ final class ChatViewModel: ObservableObject {
                     }
                     self.repository.restorePeers(restoredPeers)
                     self.mergeRestoredPeers(restoredPeers)
+                    self.groups = snapshot.groups
+                    self.sortGroups()
+                    self.repository.restoreGroups(self.groups)
 
                     var unreadCounts = snapshot.unreadCountsByPeer
                     // Preserve messages that arrived while the background snapshot
@@ -375,10 +537,10 @@ final class ChatViewModel: ObservableObject {
                     self.appendLog(
                         "已加载 \(snapshot.totalMessageCount) 条聊天记录，采用 SQLite 分页存储：\(self.repository.historyLocationDescription)"
                     )
-                    if let selectedPeerID = self.selectedPeerID,
-                       self.messages(for: selectedPeerID).isEmpty,
+                    if let selectedConversationID = self.selectedConversationID,
+                       self.messages(for: selectedConversationID).isEmpty,
                        !self.isLoadingMessages {
-                        self.loadRecentMessages(for: selectedPeerID)
+                        self.loadRecentMessages(for: selectedConversationID)
                     }
 
                 case .failure(let error):
@@ -419,7 +581,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func isViewingConversation(for peer: FeiQPeer) -> Bool {
-        NSApp.isActive && selectedPeerID == peer.id
+        NSApp.isActive && selectedGroupID == nil && selectedPeerID == peer.id
     }
 
     private func sortPeers() {
@@ -428,6 +590,12 @@ final class ChatViewModel: ObservableObject {
                 return $0.isOnline && !$1.isOnline
             }
             return $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+        }
+    }
+
+    private func sortGroups() {
+        groups.sort {
+            $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
         }
     }
 

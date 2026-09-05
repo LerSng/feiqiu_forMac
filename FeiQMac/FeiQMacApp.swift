@@ -29,8 +29,9 @@ struct FeiQMacApp: App {
         WindowGroup("飞秋 Mac") {
             ContentView()
                 .environmentObject(model)
-                .frame(minWidth: 900, minHeight: 600)
+                .frame(minWidth: 980, minHeight: 660)
         }
+        .defaultSize(width: 1120, height: 760)
         .windowResizability(.contentSize)
     }
 }

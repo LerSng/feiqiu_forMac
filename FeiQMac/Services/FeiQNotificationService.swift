@@ -1,0 +1,75 @@
+import Foundation
+import UserNotifications
+
+protocol NotificationService: AnyObject {
+    var onNotificationSelected: ((String) -> Void)? { get set }
+
+    func requestAuthorization()
+    func notifyIncomingMessage(from sender: String, text: String, peerID: String)
+}
+
+final class FeiQNotificationService: NSObject, NotificationService, UNUserNotificationCenterDelegate {
+    private let center = UNUserNotificationCenter.current()
+
+    var onNotificationSelected: ((String) -> Void)?
+
+    override init() {
+        super.init()
+        center.delegate = self
+    }
+
+    func requestAuthorization() {
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    func notifyIncomingMessage(from sender: String, text: String, peerID: String) {
+        let content = UNMutableNotificationContent()
+        let displaySender = sender.trimmingCharacters(in: .whitespacesAndNewlines)
+        content.title = displaySender.isEmpty ? "收到新消息" : "\(displaySender) 发来消息"
+        content.body = Self.previewText(text)
+        content.sound = .default
+        content.userInfo = ["feiq.peerID": peerID]
+
+        let request = UNNotificationRequest(
+            identifier: "feiq.incoming.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        center.add(request)
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        defer { completionHandler() }
+
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              let peerID = response.notification.request.content.userInfo["feiq.peerID"] as? String,
+              !peerID.isEmpty else {
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.onNotificationSelected?(peerID)
+        }
+    }
+
+    private static func previewText(_ text: String) -> String {
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > 120 else { return normalized }
+        return String(normalized.prefix(120)) + "…"
+    }
+}

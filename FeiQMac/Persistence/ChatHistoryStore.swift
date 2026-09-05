@@ -302,6 +302,7 @@ final class ChatHistoryStore {
                     text TEXT NOT NULL,
                     sender_name TEXT NOT NULL DEFAULT '',
                     recipient_name TEXT NOT NULL DEFAULT '',
+                    attachments_json TEXT NOT NULL DEFAULT '[]',
                     created_at REAL NOT NULL,
                     FOREIGN KEY(peer_id) REFERENCES conversations(peer_id)
                         ON DELETE CASCADE
@@ -317,6 +318,7 @@ final class ChatHistoryStore {
                 """
             )
             try ensureConversationKindColumn()
+            try ensureMessageAttachmentsColumn()
         } catch {
             initializationError = error
             sqlite3_close(database)
@@ -348,6 +350,34 @@ final class ChatHistoryStore {
         if !hasConversationKind {
             try execute(
                 "ALTER TABLE conversations ADD COLUMN conversation_kind TEXT NOT NULL DEFAULT 'peer'"
+            )
+        }
+    }
+
+    private func ensureMessageAttachmentsColumn() throws {
+        var hasAttachments = false
+        do {
+            let statement = try prepare("PRAGMA table_info(messages)")
+            defer { sqlite3_finalize(statement) }
+
+            while true {
+                let result = sqlite3_step(statement)
+                if result == SQLITE_DONE {
+                    break
+                }
+                guard result == SQLITE_ROW else {
+                    throw sqliteError()
+                }
+                if columnText(statement, 1) == "attachments_json" {
+                    hasAttachments = true
+                    break
+                }
+            }
+        }
+
+        if !hasAttachments {
+            try execute(
+                "ALTER TABLE messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'"
             )
         }
     }
@@ -546,7 +576,8 @@ final class ChatHistoryStore {
         if beforeMessage == nil {
             statement = try prepare(
                 """
-                SELECT id, direction, text, sender_name, recipient_name, created_at
+                SELECT id, direction, text, sender_name, recipient_name,
+                       attachments_json, created_at
                 FROM messages
                 WHERE peer_id = ?
                 ORDER BY created_at DESC, id DESC
@@ -556,7 +587,8 @@ final class ChatHistoryStore {
         } else {
             statement = try prepare(
                 """
-                SELECT id, direction, text, sender_name, recipient_name, created_at
+                SELECT id, direction, text, sender_name, recipient_name,
+                       attachments_json, created_at
                 FROM messages
                 WHERE peer_id = ?
                   AND (
@@ -607,7 +639,8 @@ final class ChatHistoryStore {
             text: columnText(statement, 2),
             senderName: columnText(statement, 3),
             recipientName: columnText(statement, 4),
-            date: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
+            date: Date(timeIntervalSince1970: sqlite3_column_double(statement, 6)),
+            attachments: decodeAttachments(columnText(statement, 5))
         )
     }
 
@@ -740,9 +773,10 @@ final class ChatHistoryStore {
         let statement = try prepare(
             """
             INSERT OR IGNORE INTO messages (
-                id, peer_id, direction, text, sender_name, recipient_name, created_at
+                id, peer_id, direction, text, sender_name, recipient_name,
+                attachments_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -753,8 +787,28 @@ final class ChatHistoryStore {
         try bindText(message.text, at: 4, in: statement)
         try bindText(message.senderName, at: 5, in: statement)
         try bindText(message.recipientName, at: 6, in: statement)
-        try bindDouble(message.date.timeIntervalSince1970, at: 7, in: statement)
+        try bindText(encodeAttachments(message.attachments), at: 7, in: statement)
+        try bindDouble(message.date.timeIntervalSince1970, at: 8, in: statement)
         try stepDone(statement)
+    }
+
+    private func encodeAttachments(_ attachments: [ChatAttachment]) -> String {
+        guard let data = try? JSONEncoder().encode(attachments) else {
+            return "[]"
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func decodeAttachments(_ value: String) -> [ChatAttachment] {
+        guard !value.isEmpty,
+              let data = value.data(using: .utf8),
+              let attachments = try? JSONDecoder().decode(
+                [ChatAttachment].self,
+                from: data
+              ) else {
+            return []
+        }
+        return attachments
     }
 
     private func updateUnreadCount(_ count: Int, for peerID: String) throws {

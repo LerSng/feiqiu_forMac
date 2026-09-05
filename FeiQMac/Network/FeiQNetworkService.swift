@@ -6,7 +6,37 @@ enum FeiQTransport: String, Sendable {
     case tcp
 }
 
+enum FeiQFileTransferError: LocalizedError {
+    case invalidAddress
+    case socketCreation
+    case connectionFailed(String)
+    case requestFailed(String)
+    case fileNotFound
+    case fileWriteFailed(String)
+    case unexpectedEndOfStream(expected: Int64, received: Int64)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidAddress:
+            return "图片传输地址无效"
+        case .socketCreation:
+            return "无法创建图片传输连接"
+        case .connectionFailed(let message):
+            return "图片传输连接失败：\(message)"
+        case .requestFailed(let message):
+            return "图片请求失败：\(message)"
+        case .fileNotFound:
+            return "待发送的图片不存在"
+        case .fileWriteFailed(let message):
+            return "接收图片保存失败：\(message)"
+        case .unexpectedEndOfStream(let expected, let received):
+            return "图片传输不完整（需要 \(expected) 字节，实际收到 \(received) 字节）"
+        }
+    }
+}
+
 protocol FeiQNetworkServiceProtocol: AnyObject {
+    var onInlineImage: ((Data, String, Int, FeiQPacket, String) -> Void)? { get set }
     var onPacket: ((FeiQPacket, String, FeiQTransport) -> Void)? { get set }
     var onLog: ((String) -> Void)? { get set }
     var onStateChange: ((Bool) -> Void)? { get set }
@@ -17,6 +47,19 @@ protocol FeiQNetworkServiceProtocol: AnyObject {
     func announce()
     func replyToEntry(from ipAddress: String)
     func sendText(_ text: String, to ipAddress: String, recipientName: String?)
+    func sendFileMessage(
+        _ text: String,
+        attachments: [ChatAttachment],
+        to ipAddress: String,
+        recipientName: String?
+    )
+    func downloadFile(
+        _ attachment: FeiQFileAttachment,
+        packetNumber: UInt64,
+        from ipAddress: String,
+        to destinationURL: URL,
+        completion: @escaping (Result<Void, Error>) -> Void
+    )
     func acknowledge(_ packet: FeiQPacket, to ipAddress: String)
 }
 
@@ -24,6 +67,12 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
     static let port: UInt16 = 2425
 
     var onPacket: ((FeiQPacket, String, FeiQTransport) -> Void)?
+    var onInlineImage: ((Data, String, Int, FeiQPacket, String) -> Void)?
+    private let imageAssembler = FeiQInlineImageAssembler()
+    private var imageSends: [String: FeiQInlineImageSendSession] = [:]
+    private var imageTimer: DispatchSourceTimer?
+    private var imageMarkers: [UInt64: (packet: FeiQPacket, ip: String, sentAt: Date, attempts: Int)] = [:]
+    private let downloadQueue = DispatchQueue(label: "com.feiqmac.file-downloads", qos: .utility)
     var onLog: ((String) -> Void)?
     var onStateChange: ((Bool) -> Void)?
 
@@ -36,6 +85,7 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
     private var clientSources: [Int32: DispatchSourceRead] = [:]
     private var clientBuffers: [Int32: Data] = [:]
     private var clientAddresses: [Int32: String] = [:]
+    private var outgoingFilesByID: [String: URL] = [:]
     private var packetCounter: UInt32 = 0
     private var running = false
 
@@ -134,6 +184,106 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         }
     }
 
+    func sendFileMessage(
+        _ text: String,
+        attachments: [ChatAttachment],
+        to ipAddress: String,
+        recipientName: String?
+    ) {
+        queue.async { [weak self] in
+            guard let self else { return }
+
+            guard self.running, !attachments.isEmpty, self.imageSends.count + attachments.count <= 32 else {
+                self.emitLog("图片未发送：网络未启动或待发送图片过多")
+                return
+            }
+            var sessions: [FeiQInlineImageSendSession] = []
+            do {
+                for attachment in attachments {
+                    let data = try Data(contentsOf: attachment.localURL, options: .mappedIfSafe)
+                    guard !data.isEmpty, data.count <= FeiQInlineImageCodec.maximumBytes else {
+                        self.emitLog("图片未发送：大小超过 20 MB")
+                        return
+                    }
+                    let imageID = String(format: "%08x", UInt32.random(in: 1...UInt32.max))
+                    sessions.append(FeiQInlineImageSendSession(imageID: imageID, ipAddress: ipAddress, data: data))
+                }
+            } catch {
+                self.emitLog("读取发送图片失败：\(error.localizedDescription)")
+                return
+            }
+            guard (self.imageSends.values.reduce(0) { $0 + $1.data.count }) + sessions.reduce(0, { $0 + $1.data.count }) <= 64 * 1024 * 1024 else {
+                self.emitLog("待发送图片总大小超过 64 MB，请稍后发送")
+                return
+            }
+            let command = FeiQCommand.sendMessage.rawValue | FeiQPacket.sendCheckOption
+            let packet = FeiQPacket(
+                versionIdentifier: self.feiQVersionIdentifier,
+                packetNumber: self.nextPacketNumber(),
+                senderName: self.localName,
+                senderHost: self.localHost,
+                command: command,
+                additionalData: GBKCodec.encode(FeiQMessageFormatter.wireText(text) + sessions.map { FeiQInlineImageCodec.marker(for: $0.imageID) }.joined())
+            )
+            let success = self.sendUDP(packet.encoded(), to: ipAddress)
+            if success {
+                for session in sessions { self.imageSends[ipAddress + "/" + session.imageID] = session }
+                self.imageMarkers[packet.packetNumber] = (packet, ipAddress, Date(), 1)
+                self.emitLog("UDP → \(recipientName ?? ipAddress)：开始发送内嵌图片（逐片等待确认）")
+                self.pumpImageSends()
+            } else {
+                self.emitLog(
+                    "UDP → \(ipAddress)：图片标记消息发送失败"
+                )
+            }
+        }
+    }
+
+    func downloadFile(
+        _ attachment: FeiQFileAttachment,
+        packetNumber: UInt64,
+        from ipAddress: String,
+        to destinationURL: URL,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let request = FeiQPacket(packetNumber: self.nextPacketNumber(), senderName: self.localName,
+                                     senderHost: self.localHost, command: .getFileData,
+                                     additionalText: "\(String(packetNumber, radix: 16)):\(String(UInt64(attachment.fileID) ?? 0, radix: 16)):0:",
+                                     versionIdentifier: self.feiQVersionIdentifier)
+            self.downloadQueue.async {
+                let result = self.downloadFileInternal(attachment, request: request, from: ipAddress, to: destinationURL)
+                completion(result)
+            }
+        }
+    }
+
+    private func pumpImageSends() {
+        for (number, marker) in imageMarkers where Date().timeIntervalSince(marker.sentAt) >= 1 {
+            if marker.attempts >= 8 {
+                imageMarkers.removeValue(forKey: number)
+                emitLog("图片标记消息未收到确认：\(marker.ip)")
+            } else {
+                _ = sendUDP(marker.packet.encoded(), to: marker.ip)
+                imageMarkers[number] = (marker.packet, marker.ip, Date(), marker.attempts + 1)
+            }
+        }
+        for (key, session) in imageSends {
+            for index in session.nextChunks() {
+                let packet = FeiQPacket(versionIdentifier: feiQVersionIdentifier, packetNumber: nextPacketNumber(),
+                                        senderName: localName, senderHost: localHost,
+                                        command: FeiQCommand.inlineImage.rawValue | FeiQPacket.fileAttachOption,
+                                        additionalData: FeiQInlineImageCodec.encode(imageID: session.imageID, data: session.data, index: index))
+                _ = sendUDP(packet.encoded(), to: session.ipAddress)
+            }
+            if session.failed || session.isComplete {
+                imageSends.removeValue(forKey: key)
+                emitLog("UDP → \(session.ipAddress)：图片 \(session.imageID) " + (session.failed ? "发送失败：重试后仍未收到分片确认" : "发送完成，所有分片已确认"))
+            }
+        }
+    }
+
     func acknowledge(_ packet: FeiQPacket, to ipAddress: String) {
         queue.async { [weak self] in
             guard let self else { return }
@@ -183,6 +333,14 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         heartbeatTimer = timer
 
         running = true
+        let imageTimer = DispatchSource.makeTimerSource(queue: queue)
+        imageTimer.schedule(deadline: .now(), repeating: .milliseconds(100))
+        imageTimer.setEventHandler { [weak self] in
+            self?.pumpImageSends()
+            self?.imageAssembler.prune()
+        }
+        imageTimer.resume()
+        self.imageTimer = imageTimer
         emitState(true)
         emitLog("本机 IPv4：\(localIPv4Addresses().joined(separator: ", "))")
         emitLog("广播地址：\(broadcastAddresses().joined(separator: ", "))")
@@ -192,6 +350,11 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
     }
 
     private func stopInternal(announceExit: Bool) {
+        imageTimer?.cancel()
+        imageTimer = nil
+        imageSends.removeAll()
+        imageMarkers.removeAll()
+        imageAssembler.clear()
         if announceExit, running {
             sendExitInternal()
         }
@@ -219,6 +382,11 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         clientSources.removeAll()
         clientBuffers.removeAll()
         clientAddresses.removeAll()
+        // A single attachment can be requested by several recipients (for
+        // example, when sending a group image). Keep the URL index for the
+        // lifetime of this network session instead of removing it when the
+        // first recipient sends RELEASEFILES.
+        outgoingFilesByID.removeAll()
 
         let wasRunning = running
         running = false
@@ -233,6 +401,8 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         guard descriptor >= 0 else { return nil }
 
         var reuse: Int32 = 1
+        var receiveBuffer: Int32 = 1024 * 1024
+        setsockopt(descriptor, SOL_SOCKET, SO_RCVBUF, &receiveBuffer, socklen_t(MemoryLayout<Int32>.size))
         _ = withUnsafePointer(to: &reuse) {
             setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, $0, socklen_t(MemoryLayout<Int32>.size))
         }
@@ -376,7 +546,10 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
 
             let data = Data(buffer[0..<count])
             let ipAddress = ipv4Address(from: sender) ?? "未知地址"
-            handleIncoming(data: data, from: ipAddress, transport: .udp)
+            let sourcePort = withUnsafePointer(to: &sender) {
+                $0.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt16(bigEndian: $0.pointee.sin_port) }
+            }
+            handleIncoming(data: data, from: ipAddress, transport: .udp, sourcePort: sourcePort)
         }
     }
 
@@ -391,12 +564,16 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
 
             if count > 0 {
                 clientBuffers[descriptor, default: Data()].append(contentsOf: buffer[0..<count])
-                consumeCompleteTCPFrames(for: descriptor)
+                if consumeCompleteTCPFrames(for: descriptor) {
+                    return
+                }
                 continue
             }
 
             if count == 0 {
-                consumeFinalTCPFrame(for: descriptor)
+                if consumeFinalTCPFrame(for: descriptor) {
+                    return
+                }
                 closeTCPClient(descriptor)
                 return
             }
@@ -404,18 +581,24 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
             if errno == EAGAIN || errno == EWOULDBLOCK {
                 return
             }
-            consumeFinalTCPFrame(for: descriptor)
+            if consumeFinalTCPFrame(for: descriptor) {
+                return
+            }
             closeTCPClient(descriptor)
             return
         }
     }
 
-    private func consumeCompleteTCPFrames(for descriptor: Int32) {
-        guard var data = clientBuffers[descriptor] else { return }
+    @discardableResult
+    private func consumeCompleteTCPFrames(for descriptor: Int32) -> Bool {
+        guard var data = clientBuffers[descriptor] else { return false }
         while let terminator = data.firstIndex(of: 0) {
             let frame = Data(data.prefix(upTo: terminator))
             data.removeSubrange(...terminator)
-            handleIncoming(data: frame, from: clientAddresses[descriptor] ?? "未知地址", transport: .tcp)
+            if handleTCPFrame(frame, on: descriptor) {
+                closeTCPClient(descriptor)
+                return true
+            }
         }
 
         // Some FeiQ/IPMSG clients send one logical packet on TCP and keep the
@@ -425,7 +608,10 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         if !data.isEmpty,
            let packet = FeiQPacket.parse(data),
            (packet.commandType != .sendMessage || !packet.additionalData.isEmpty) {
-            handleIncoming(data: data, from: clientAddresses[descriptor] ?? "未知地址", transport: .tcp)
+            if handleTCPFrame(data, on: descriptor) {
+                closeTCPClient(descriptor)
+                return true
+            }
             data.removeAll(keepingCapacity: true)
         }
 
@@ -435,12 +621,96 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
             data.removeAll(keepingCapacity: true)
         }
         clientBuffers[descriptor] = data
+        return false
     }
 
-    private func consumeFinalTCPFrame(for descriptor: Int32) {
-        guard let data = clientBuffers[descriptor], !data.isEmpty else { return }
-        handleIncoming(data: data, from: clientAddresses[descriptor] ?? "未知地址", transport: .tcp)
+    @discardableResult
+    private func consumeFinalTCPFrame(for descriptor: Int32) -> Bool {
+        guard let data = clientBuffers[descriptor], !data.isEmpty else { return false }
+        if handleTCPFrame(data, on: descriptor) {
+            return true
+        }
         clientBuffers[descriptor] = Data()
+        return false
+    }
+
+    private func handleTCPFrame(_ data: Data, on descriptor: Int32) -> Bool {
+        guard let packet = FeiQPacket.parse(data) else {
+            handleIncoming(
+                data: data,
+                from: clientAddresses[descriptor] ?? "未知地址",
+                transport: .tcp
+            )
+            return false
+        }
+
+        if packet.commandType == .getFileData {
+            sendRequestedFile(packet, on: descriptor)
+            return true
+        }
+
+        handleIncoming(
+            data: data,
+            from: clientAddresses[descriptor] ?? "未知地址",
+            transport: .tcp
+        )
+        return false
+    }
+
+    private func sendRequestedFile(_ packet: FeiQPacket, on descriptor: Int32) {
+        let fields = packet.additionalText.split(
+            separator: ":",
+            omittingEmptySubsequences: false
+        )
+        guard let fileID = fields.first.map(String.init),
+              !fileID.isEmpty,
+              let fileURL = outgoingFilesByID[fileID] else {
+            emitLog("TCP →：找不到请求的图片文件 \(packet.additionalText)")
+            return
+        }
+
+        let offset: UInt64
+        if fields.count > 1 {
+            offset = UInt64(fields[1]) ?? 0
+        } else {
+            offset = 0
+        }
+
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            emitLog("TCP →：图片文件已不存在：\(fileURL.path)")
+            return
+        }
+
+        setBlocking(descriptor)
+        var timeout = timeval(tv_sec: 60, tv_usec: 0)
+        _ = withUnsafePointer(to: &timeout) {
+            setsockopt(
+                descriptor,
+                SOL_SOCKET,
+                SO_SNDTIMEO,
+                $0,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
+        }
+
+        do {
+            let fileHandle = try FileHandle(forReadingFrom: fileURL)
+            defer { try? fileHandle.close() }
+            try fileHandle.seek(toOffset: offset)
+
+            while true {
+                let chunk = try fileHandle.read(upToCount: 64 * 1024) ?? Data()
+                if chunk.isEmpty { break }
+                guard sendAll(chunk, on: descriptor) else {
+                    emitLog("TCP →：发送图片数据失败：\(String(cString: strerror(errno)))")
+                    return
+                }
+            }
+            _ = Darwin.shutdown(descriptor, SHUT_WR)
+            emitLog("TCP →：已发送图片文件 \(fileURL.lastPathComponent)")
+        } catch {
+            emitLog("TCP →：读取图片文件失败：\(error.localizedDescription)")
+        }
     }
 
     private func closeTCPClient(_ descriptor: Int32) {
@@ -454,11 +724,39 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         }
     }
 
-    private func handleIncoming(data: Data, from ipAddress: String, transport: FeiQTransport) {
+    private func handleIncoming(data: Data, from ipAddress: String, transport: FeiQTransport, sourcePort: UInt16 = FeiQNetworkService.port) {
         guard let packet = FeiQPacket.parse(data) else {
             let preview = data.prefix(96).map { String(format: "%02X", $0) }.joined(separator: " ")
             emitLog("\(transport.rawValue.uppercased()) ← \(ipAddress)：无法解析报文（\(data.count) bytes，前 96 bytes: \(preview)）")
             return
+        }
+        if packet.commandType == .inlineImage {
+            guard transport == .udp, let chunk = FeiQInlineImageCodec.decode(packet.additionalData) else {
+                emitLog("图片分片格式无效（\(packet.additionalData.count) bytes）")
+                return
+            }
+            let result = imageAssembler.accept(chunk, from: ipAddress)
+            guard result.accepted else { return }
+            let ack = FeiQPacket(packetNumber: nextPacketNumber(), senderName: localName, senderHost: localHost,
+                                 command: .inlineImageAcknowledgement,
+                                 additionalText: "\(chunk.imageID)|\(chunk.index)#", versionIdentifier: feiQVersionIdentifier)
+            _ = sendUDP(ack.encoded(), to: ipAddress, port: sourcePort)
+            if let bytes = result.data {
+                emitLog("UDP ← \(ipAddress)：内嵌图片 \(chunk.imageID) 重组完成（\(bytes.count) bytes）")
+                onInlineImage?(bytes, chunk.imageID, chunk.bitmapFlag, packet, ipAddress)
+            }
+            return
+        }
+        if packet.commandType == .inlineImageAcknowledgement {
+            if let ack = FeiQInlineImageCodec.acknowledgement(packet.additionalText) {
+                imageSends[ipAddress + "/" + ack.imageID]?.acknowledge(ack.index)
+                pumpImageSends()
+            }
+            return
+        }
+        if packet.commandType == .receiveMessage, let number = UInt64(packet.additionalText),
+           imageMarkers[number]?.ip == ipAddress {
+            imageMarkers.removeValue(forKey: number)
         }
         let commandText = packet.commandType.map { String(describing: $0) } ?? "0x\(String(packet.command, radix: 16))"
         let sender = packet.senderName.isEmpty ? "<空昵称>" : packet.senderName
@@ -467,6 +765,7 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
             ? localName
             : "局域网广播"
         emitLog("\(transport.rawValue.uppercased()) ← \(ipAddress)：\(commandText) [发送人：\(sender)，收件人：\(recipient)，命令 \(packet.command)，主机 \(host)，版本 \(packet.versionIdentifier)]")
+
         onPacket?(packet, ipAddress, transport)
     }
 
@@ -522,12 +821,13 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
     }
 
     @discardableResult
-    private func sendUDP(_ data: Data, to ipAddress: String) -> Bool {
+    private func sendUDP(_ data: Data, to ipAddress: String, port: UInt16 = FeiQNetworkService.port) -> Bool {
         guard udpSocket >= 0 else { return false }
         guard var address = makeIPv4Address(ipAddress) else {
             emitLog("UDP → \(ipAddress)：不是有效的 IPv4 地址")
             return false
         }
+        address.sin_port = port.bigEndian
         let result = data.withUnsafeBytes { rawData -> Int in
             guard let baseAddress = rawData.baseAddress else { return -1 }
             return withUnsafePointer(to: &address) {
@@ -586,6 +886,141 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         }
         _ = Darwin.shutdown(descriptor, SHUT_WR)
         return sent
+    }
+
+    private func downloadFileInternal(
+        _ attachment: FeiQFileAttachment,
+        request: FeiQPacket,
+        from ipAddress: String,
+        to destinationURL: URL
+    ) -> Result<Void, Error> {
+        guard let address = makeIPv4Address(ipAddress) else {
+            return .failure(FeiQFileTransferError.invalidAddress)
+        }
+
+        let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        guard descriptor >= 0 else {
+            return .failure(FeiQFileTransferError.socketCreation)
+        }
+        defer { Darwin.close(descriptor) }
+
+        var timeout = timeval(tv_sec: 60, tv_usec: 0)
+        _ = withUnsafePointer(to: &timeout) {
+            setsockopt(
+                descriptor,
+                SOL_SOCKET,
+                SO_RCVTIMEO,
+                $0,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
+        }
+        _ = withUnsafePointer(to: &timeout) {
+            setsockopt(
+                descriptor,
+                SOL_SOCKET,
+                SO_SNDTIMEO,
+                $0,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
+        }
+
+        var mutableAddress = address
+        let connected = withUnsafePointer(to: &mutableAddress) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(
+                    descriptor,
+                    $0,
+                    socklen_t(MemoryLayout<sockaddr_in>.size)
+                )
+            }
+        }
+        guard connected == 0 else {
+            return .failure(
+                FeiQFileTransferError.connectionFailed(
+                    String(cString: strerror(errno))
+                )
+            )
+        }
+
+        guard sendAll(request.encoded(), on: descriptor) else {
+            return .failure(
+                FeiQFileTransferError.requestFailed(
+                    String(cString: strerror(errno))
+                )
+            )
+        }
+        _ = Darwin.shutdown(descriptor, SHUT_WR)
+
+        do {
+            try FileManager.default.createDirectory(
+                at: destinationURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            FileManager.default.createFile(
+                atPath: destinationURL.path,
+                contents: nil
+            )
+            let fileHandle = try FileHandle(forWritingTo: destinationURL)
+            defer { try? fileHandle.close() }
+
+            var receivedBytes: Int64 = 0
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            while receivedBytes < attachment.fileSize {
+                let count = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
+                    Darwin.recv(
+                        descriptor,
+                        rawBuffer.baseAddress,
+                        min(rawBuffer.count, Int(attachment.fileSize - receivedBytes)),
+                        0
+                    )
+                }
+
+                if count > 0 {
+                    try fileHandle.write(contentsOf: Data(buffer[0..<count]))
+                    receivedBytes += Int64(count)
+                    continue
+                }
+                if count == 0 {
+                    try? FileManager.default.removeItem(at: destinationURL)
+                    return .failure(
+                        FeiQFileTransferError.unexpectedEndOfStream(
+                            expected: attachment.fileSize,
+                            received: receivedBytes
+                        )
+                    )
+                }
+
+                let errorCode = errno
+                try? FileManager.default.removeItem(at: destinationURL)
+                return .failure(
+                    FeiQFileTransferError.connectionFailed(
+                        String(cString: strerror(errorCode))
+                    )
+                )
+            }
+
+            // Do not release the whole message here: other attachments may
+            // still be downloading.
+            emitLog(
+                "TCP ← \(ipAddress)：已接收图片 \(attachment.fileName)（\(attachment.fileSize) bytes）"
+            )
+            return .success(())
+        } catch {
+            try? FileManager.default.removeItem(at: destinationURL)
+            return .failure(FeiQFileTransferError.fileWriteFailed(error.localizedDescription))
+        }
+    }
+
+    private func sendReleaseFiles(for fileID: String, to ipAddress: String) {
+        let packet = FeiQPacket(
+            packetNumber: nextPacketNumber(),
+            senderName: localName,
+            senderHost: localHost,
+            command: .releaseFiles,
+            additionalText: fileID,
+            versionIdentifier: feiQVersionIdentifier
+        )
+        _ = sendUDP(packet.encoded(), to: ipAddress)
     }
 
     private func sendAll(_ data: Data, on descriptor: Int32) -> Bool {
@@ -683,6 +1118,13 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         let flags = fcntl(descriptor, F_GETFL, 0)
         if flags >= 0 {
             _ = fcntl(descriptor, F_SETFL, flags | O_NONBLOCK)
+        }
+    }
+
+    private func setBlocking(_ descriptor: Int32) {
+        let flags = fcntl(descriptor, F_GETFL, 0)
+        if flags >= 0 {
+            _ = fcntl(descriptor, F_SETFL, flags & ~O_NONBLOCK)
         }
     }
 

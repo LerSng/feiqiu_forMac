@@ -42,7 +42,7 @@ struct GroupEditorView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(editingGroup == nil ? "新建群聊" : "群聊设置")
                         .font(.title2.weight(.bold))
-                    Text("群聊在 Mac 端统一管理，消息按成员兼容发送")
+                    Text("Mac 作为群聊中继，成员消息会转发给其他成员")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -11,6 +11,7 @@ struct FeiQMacApp: App {
         let repository = DefaultChatRepository(
             networkService: FeiQNetworkService(),
             historyService: SQLiteChatHistoryService.makeDefault(),
+            attachmentStorageService: LocalChatAttachmentStorageService.makeDefault(),
             notificationService: notificationService
         )
         let settingsRepository = DefaultAppSettingsRepository(

@@ -17,6 +17,11 @@ enum FeiQCommand: UInt32, Sendable {
     case deleteMessage = 0x00000031
     case answerReadMessage = 0x00000032
     case sendInfo = 0x00000041
+    case getFileData = 0x00000060
+    case releaseFiles = 0x00000061
+    case getDirectoryFiles = 0x00000062
+    case inlineImage = 0x000000C0
+    case inlineImageAcknowledgement = 0x000000C1
 
     static func from(rawValue: UInt32) -> FeiQCommand? {
         // The high bits are option flags in the IP Messenger/FeiQ family.
@@ -39,6 +44,11 @@ enum FeiQCommand: UInt32, Sendable {
         case deleteMessage.rawValue: return .deleteMessage
         case answerReadMessage.rawValue: return .answerReadMessage
         case sendInfo.rawValue: return .sendInfo
+        case getFileData.rawValue: return .getFileData
+        case releaseFiles.rawValue: return .releaseFiles
+        case getDirectoryFiles.rawValue: return .getDirectoryFiles
+        case inlineImage.rawValue: return .inlineImage
+        case inlineImageAcknowledgement.rawValue: return .inlineImageAcknowledgement
         default: return nil
         }
     }
@@ -96,6 +106,7 @@ enum FeiQMessageFormatter {
             result = result.replacingOccurrences(of: code, with: emoji)
         }
 
+        result = FeiQInlineImageCodec.replacingMarkers(in: result, with: "[图片]")
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -112,6 +123,200 @@ enum FeiQMessageFormatter {
     }
 }
 
+/// Defines the small amount of metadata needed to relay a group message
+/// through a FeiQ 2013 client. FeiQ 2013 does not expose a native group-chat
+/// packet, so group messages must remain ordinary FeiQ messages on the wire.
+enum FeiQGroupRelayFormatter {
+    struct ParsedMessage: Sendable {
+        let groupName: String
+        let senderName: String
+        let text: String
+    }
+
+    private static let markerPrefix = "【飞秋群聊："
+
+    static func makeText(
+        groupName: String,
+        senderName: String,
+        text: String
+    ) -> String {
+        let normalizedGroupName = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedSenderName = senderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayGroupName = normalizedGroupName.isEmpty ? "未命名群聊" : normalizedGroupName
+        let displaySenderName = normalizedSenderName.isEmpty ? "未知发送人" : normalizedSenderName
+        return "\(markerPrefix)\(displayGroupName)】\(displaySenderName)：\(text)"
+    }
+
+    static func parse(_ text: String) -> ParsedMessage? {
+        guard text.hasPrefix(markerPrefix),
+              let titleEnd = text.firstIndex(of: "】") else {
+            return nil
+        }
+
+        let groupStart = text.index(
+            text.startIndex,
+            offsetBy: markerPrefix.count
+        )
+        let groupName = String(text[groupStart..<titleEnd])
+        let contentStart = text.index(after: titleEnd)
+        let content = String(text[contentStart...])
+        let separator = content.firstIndex(of: "：") ?? content.firstIndex(of: ":")
+        guard let separator else { return nil }
+
+        let senderName = String(content[..<separator])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let messageStart = content.index(after: separator)
+        let messageText = String(content[messageStart...])
+
+        guard !groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !senderName.isEmpty else {
+            return nil
+        }
+
+        return ParsedMessage(
+            groupName: groupName,
+            senderName: senderName,
+            text: messageText
+        )
+    }
+}
+
+/// Encodes and decodes the attachment section used by IP Messenger and FeiQ.
+/// The message text is followed by NUL and one or more BEL-terminated records:
+/// fileID:fileName:fileSize:modifiedAt:fileAttributes.
+enum FeiQAttachmentCodec {
+    private static let metadataSeparator: UInt8 = 0
+    private static let recordSeparator: UInt8 = 7
+
+    static func encode(
+        message: String,
+        attachments: [FeiQFileAttachment],
+        preferUTF8: Bool
+    ) -> Data {
+        var result = GBKCodec.encode(message, preferUTF8: preferUTF8)
+        guard !attachments.isEmpty else { return result }
+
+        result.append(metadataSeparator)
+        for attachment in attachments {
+            let fields = [
+                attachment.fileID,
+                attachment.fileName,
+                String(attachment.fileSize, radix: 16),
+                String(attachment.modifiedAt, radix: 16),
+                String(attachment.fileAttributes, radix: 16)
+            ]
+            result.append(
+                GBKCodec.encode(fields.joined(separator: ":"), preferUTF8: preferUTF8)
+            )
+            result.append(recordSeparator)
+        }
+        return result
+    }
+
+    static func messageData(
+        from data: Data,
+        hasAttachments: Bool
+    ) -> Data {
+        guard hasAttachments else {
+            guard let separator = data.firstIndex(of: metadataSeparator) else {
+                return data
+            }
+            return Data(data.prefix(upTo: separator))
+        }
+        return split(data).message
+    }
+
+    static func decode(
+        from data: Data,
+        preferUTF8: Bool
+    ) -> [FeiQFileAttachment] {
+        guard !data.isEmpty else { return [] }
+        let metadata = split(data).metadata
+        guard !metadata.isEmpty else { return [] }
+
+        return metadata
+            .split { byte in
+                byte == recordSeparator || byte == metadataSeparator
+            }
+            .compactMap { record in
+                parseRecord(Data(record), preferUTF8: preferUTF8)
+            }
+    }
+
+    private static func split(_ data: Data) -> (message: Data, metadata: Data) {
+        if let separator = data.firstIndex(of: metadataSeparator) {
+            let metadataStart = data.index(after: separator)
+            return (
+                Data(data.prefix(upTo: separator)),
+                Data(data.suffix(from: metadataStart))
+            )
+        }
+
+        // A few older implementations use BEL as the text/metadata boundary
+        // instead of NUL. Accept that form for receiving without changing the
+        // canonical NUL + BEL representation used when sending.
+        for separator in data.indices where data[separator] == recordSeparator {
+            let metadataStart = data.index(after: separator)
+            let candidate = Data(data.suffix(from: metadataStart))
+            if parseRecords(candidate).contains(where: { parseRecord($0, preferUTF8: false) != nil }) {
+                return (
+                    Data(data.prefix(upTo: separator)),
+                    candidate
+                )
+            }
+        }
+
+        if parseRecords(data).contains(where: { parseRecord($0, preferUTF8: false) != nil }) {
+            return (Data(), data)
+        }
+        return (data, Data())
+    }
+
+    private static func parseRecords(_ data: Data) -> [Data] {
+        data
+            .split { byte in
+                byte == recordSeparator || byte == metadataSeparator
+            }
+            .map { Data($0) }
+    }
+
+    private static func parseRecord(
+        _ data: Data,
+        preferUTF8: Bool
+    ) -> FeiQFileAttachment? {
+        let fields = data
+            .split(separator: 58, omittingEmptySubsequences: false)
+            .map { GBKCodec.decode(Data($0), preferUTF8: preferUTF8) }
+        guard fields.count >= 5,
+              !fields[0].isEmpty,
+              !fields[1].isEmpty,
+              let fileSize = Int64(fields[2], radix: 16),
+              fileSize >= 0,
+              let modifiedAt = Int64(fields[3], radix: 16),
+              let fileAttributes = UInt32(fields[4], radix: 16) else {
+            return nil
+        }
+
+        return FeiQFileAttachment(
+            fileID: fields[0],
+            fileName: fields[1],
+            fileSize: fileSize,
+            modifiedAt: modifiedAt,
+            fileAttributes: fileAttributes
+        )
+    }
+
+    private static func parseUInt32(_ value: String) -> UInt32? {
+        if let decimal = UInt32(value) {
+            return decimal
+        }
+        let hexadecimal = value.hasPrefix("0x") || value.hasPrefix("0X")
+            ? String(value.dropFirst(2))
+            : value
+        return UInt32(hexadecimal, radix: 16)
+    }
+}
+
 struct FeiQPacket: Sendable {
     static let version = 1
 
@@ -119,6 +324,7 @@ struct FeiQPacket: Sendable {
     // It is kept here so the decoder can prefer UTF-8 when a peer advertises it.
     static let utf8Option: UInt32 = 0x00800000
     static let sendCheckOption: UInt32 = 0x00000100
+    static let fileAttachOption: UInt32 = 0x00200000
 
     let versionNumber: Int
     /// The first field is normally just "1", but FeiQ 2013 puts its
@@ -147,6 +353,18 @@ struct FeiQPacket: Sendable {
 
     var prefersUTF8: Bool {
         (command & Self.utf8Option) != 0
+    }
+
+    var hasFileAttachments: Bool {
+        (command & Self.fileAttachOption) != 0
+    }
+
+    var fileAttachments: [FeiQFileAttachment] {
+        guard hasFileAttachments else { return [] }
+        return FeiQAttachmentCodec.decode(
+            from: additionalData,
+            preferUTF8: prefersUTF8
+        )
     }
 
     /// The FeiQ implementation identifies itself by extending the version
@@ -217,10 +435,10 @@ struct FeiQPacket: Sendable {
     }
 
     var additionalText: String {
-        var payload = additionalData
-        if let nullIndex = payload.firstIndex(of: 0) {
-            payload = Data(payload.prefix(upTo: nullIndex))
-        }
+        var payload = FeiQAttachmentCodec.messageData(
+            from: additionalData,
+            hasAttachments: hasFileAttachments
+        )
         while let last = payload.last, last == 0 || last == 10 || last == 13 {
             payload.removeLast()
         }
@@ -283,17 +501,16 @@ struct FeiQPacket: Sendable {
         result.append(additionalData)
         // FeiQ/IP Messenger packets are NUL-terminated. TCP is a stream, so
         // this terminator is also used by the stream decoder as a frame mark.
-        if result.last != 0 {
+        if commandType != .inlineImage && result.last != 0 {
             result.append(0)
         }
         return result
     }
 
     static func parse(_ input: Data) -> FeiQPacket? {
-        var bytes = Array(input)
-        while bytes.last == 0 || bytes.last == 10 || bytes.last == 13 {
-            bytes.removeLast()
-        }
+        let bytes = Array(input)
+        // Keep the payload byte-exact: inline image chunks contain arbitrary
+        // binary data, including trailing zero, CR and LF bytes.
 
         guard !bytes.isEmpty else { return nil }
 

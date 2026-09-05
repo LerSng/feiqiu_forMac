@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct ChatDetailView: View {
     @EnvironmentObject private var model: ChatViewModel
@@ -81,9 +82,9 @@ private struct GroupChatHeader: View {
             Spacer()
 
             FeiQStatusPill(
-                title: "兼容群聊",
-                subtitle: "按成员分别发送",
-                systemImage: "checkmark.seal.fill",
+                title: "群聊中继",
+                subtitle: "Mac 转发给成员",
+                systemImage: "arrow.triangle.branch",
                 tint: FeiQUI.accent
             )
         }
@@ -413,6 +414,7 @@ private struct MessageList: View {
 }
 
 private struct MessageBubble: View {
+    @EnvironmentObject private var model: ChatViewModel
     let message: ChatMessage
     let conversationName: String
     let peer: FeiQPeer?
@@ -481,47 +483,54 @@ private struct MessageBubble: View {
                 .truncationMode(.middle)
                 .frame(maxWidth: 520, alignment: isOutgoing ? .trailing : .leading)
 
-                Text(message.text)
-                    .font(.body)
-                    .lineSpacing(2)
-                    .multilineTextAlignment(.leading)
-                    .textSelection(.enabled)
-                    .foregroundStyle(isOutgoing ? Color.white : Color.primary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 15)
-                    .padding(.vertical, 11)
-                    .background {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                .fill(FeiQUI.cardBackground)
-                            if isOutgoing {
+                if !model.displayText(for: message).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(model.displayText(for: message))
+                        .font(.body)
+                        .lineSpacing(2)
+                        .multilineTextAlignment(.leading)
+                        .textSelection(.enabled)
+                        .foregroundStyle(isOutgoing ? Color.white : Color.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 15)
+                        .padding(.vertical, 11)
+                        .background {
+                            ZStack {
                                 RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [
-                                                FeiQUI.accent,
-                                                FeiQUI.accent.opacity(0.78)
-                                            ],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
+                                    .fill(FeiQUI.cardBackground)
+                                if isOutgoing {
+                                    RoundedRectangle(cornerRadius: 17, style: .continuous)
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [
+                                                    FeiQUI.accent,
+                                                    FeiQUI.accent.opacity(0.78)
+                                                ],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            )
                                         )
-                                    )
+                                }
                             }
                         }
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 17, style: .continuous)
-                            .stroke(
-                                isOutgoing ? Color.white.opacity(0.16) : FeiQUI.separator,
-                                lineWidth: 1
-                            )
-                    }
-                    .shadow(
-                        color: Color.black.opacity(isOutgoing ? 0.13 : 0.06),
-                        radius: 7,
-                        y: 3
-                    )
-                    .frame(maxWidth: 520, alignment: isOutgoing ? .trailing : .leading)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                                .stroke(
+                                    isOutgoing ? Color.white.opacity(0.16) : FeiQUI.separator,
+                                    lineWidth: 1
+                                )
+                        }
+                        .shadow(
+                            color: Color.black.opacity(isOutgoing ? 0.13 : 0.06),
+                            radius: 7,
+                            y: 3
+                        )
+                        .frame(maxWidth: 520, alignment: isOutgoing ? .trailing : .leading)
+                }
+
+                ForEach(message.attachments) { attachment in
+                    ImageAttachmentView(attachment: attachment)
+                        .frame(maxWidth: 360, alignment: isOutgoing ? .trailing : .leading)
+                }
             }
 
             if isOutgoing {
@@ -552,6 +561,54 @@ private struct MessageBubble: View {
     }()
 }
 
+private struct ImageAttachmentView: View {
+    let attachment: ChatAttachment
+    @State private var image: NSImage?
+    @State private var didAttemptLoad = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(maxWidth: 340, maxHeight: 280)
+            } else if attachment.isAvailable && !didAttemptLoad {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 180, height: 120)
+            } else {
+                Label("图片文件不可用", systemImage: "photo.badge.exclamationmark")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 180, height: 90)
+            }
+        }
+        .background(
+            FeiQUI.cardBackground.opacity(0.7),
+            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(FeiQUI.separator, lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.08), radius: 6, y: 3)
+        .onAppear {
+            guard image == nil, attachment.isAvailable else { return }
+            image = NSImage(contentsOf: attachment.localURL)
+            didAttemptLoad = true
+        }
+        .contextMenu {
+            Button("在 Finder 中显示") {
+                NSWorkspace.shared.activateFileViewerSelecting([attachment.localURL])
+            }
+        }
+        .help("\(attachment.fileName) · \(attachment.fileSizeDescription)")
+    }
+}
+
 private struct MessageComposer: View {
     @EnvironmentObject private var model: ChatViewModel
     @State private var showingEmojiPicker = false
@@ -569,6 +626,23 @@ private struct MessageComposer: View {
             }
 
             HStack(alignment: .bottom, spacing: 10) {
+                Button {
+                    model.chooseAndSendImage()
+                } label: {
+                    Image(systemName: "photo.on.rectangle.angled")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, height: 34)
+                        .background(FeiQUI.subtleFill, in: Circle())
+                        .overlay {
+                            Circle()
+                                .stroke(FeiQUI.separator, lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+                .help("发送图片")
+                .disabled(model.selectedConversationID == nil)
+
                 Button {
                     showingEmojiPicker.toggle()
                 } label: {
@@ -630,7 +704,7 @@ private struct MessageComposer: View {
                 .opacity(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.45 : 1)
                 .accessibilityLabel("发送")
             }
-            Label("飞秋兼容表情使用 Windows 表情码，中文自动转换为 GB18030", systemImage: "info.circle")
+            Label("图片直接显示在聊天中 · 支持常见图片格式（发送时转为 JPEG，最长边 4096 像素）", systemImage: "info.circle")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }

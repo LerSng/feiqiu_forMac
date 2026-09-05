@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import UniformTypeIdentifiers
 
 @MainActor
 final class ChatViewModel: ObservableObject {
@@ -162,7 +163,7 @@ final class ChatViewModel: ObservableObject {
 
         let group: ChatGroup
         if let editingGroupID,
-           let existingGroup = group(withID: editingGroupID) {
+           let existingGroup = self.group(withID: editingGroupID) {
             group = ChatGroup(
                 id: existingGroup.id,
                 name: normalizedName,
@@ -185,8 +186,8 @@ final class ChatViewModel: ObservableObject {
         sortGroups()
         repository.saveGroup(group)
         selectGroup(group.id)
-        editingGroupID = nil
-        showingGroupEditor = false
+        self.editingGroupID = nil
+        self.showingGroupEditor = false
     }
 
     func deleteGroup(_ groupID: String) {
@@ -321,6 +322,63 @@ final class ChatViewModel: ObservableObject {
         draft.append(emoji)
     }
 
+    func chooseAndSendImage() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.image]
+        panel.prompt = "发送图片"
+        panel.message = "选择要发送的图片"
+
+        guard panel.runModal() == .OK,
+              let fileURL = panel.url else {
+            return
+        }
+
+        if let peer = selectedPeer {
+            let conversationID = peer.id
+            repository.sendImage(
+                from: fileURL,
+                to: peer,
+                unreadCount: unreadCount(for: peer.id)
+            ) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    switch result {
+                    case .success(let message):
+                        self.appendMessageToCurrentConversation(
+                            message,
+                            conversationID: conversationID
+                        )
+                    case .failure(let error):
+                        self.appendLog("图片发送失败：\(error.localizedDescription)")
+                    }
+                }
+            }
+        } else if let group = selectedGroup {
+            let conversationID = group.id
+            repository.sendGroupImage(
+                from: fileURL,
+                to: group,
+                members: members(for: group.id)
+            ) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    switch result {
+                    case .success(let message):
+                        self.appendMessageToCurrentConversation(
+                            message,
+                            conversationID: conversationID
+                        )
+                    case .failure(let error):
+                        self.appendLog("群聊图片发送失败：\(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+    }
+
     func clearLogs() {
         logs.removeAll()
     }
@@ -357,7 +415,7 @@ final class ChatViewModel: ObservableObject {
             }
             if !isViewing, !belongsToGroup {
                 repository.notifyIncomingMessage(
-                    text: message.text,
+                    text: notificationPreview(for: message),
                     from: peer.displayName,
                     conversationID: peer.id
                 )
@@ -385,7 +443,7 @@ final class ChatViewModel: ObservableObject {
             if !isViewing {
                 let sender = message.senderName.isEmpty ? group.displayName : message.senderName
                 repository.notifyIncomingMessage(
-                    text: message.text,
+                    text: notificationPreview(for: message),
                     from: group.displayName + " · " + sender,
                     conversationID: group.id
                 )
@@ -604,6 +662,18 @@ final class ChatViewModel: ObservableObject {
         if logs.count > 300 {
             logs.removeFirst(logs.count - 300)
         }
+    }
+
+    private func notificationPreview(for message: ChatMessage) -> String {
+        if !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return message.text
+        }
+        return message.attachments.isEmpty ? "收到新消息" : "发送了一张图片"
+    }
+
+    func displayText(for message: ChatMessage) -> String {
+        FeiQInlineImageCodec.replacingMarkers(in: message.text,
+            with: message.attachments.isEmpty ? "[历史图片未保存，请对方重新发送]" : "")
     }
 
     private static var defaultHostName: String {

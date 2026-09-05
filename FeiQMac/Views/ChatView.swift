@@ -1,3 +1,10 @@
+//
+//  ChatView.swift
+//  FeiQMac
+//
+//  负责单聊与群聊详情页，包括聊天头部、消息列表、消息气泡、输入区和空状态。
+//
+
 import SwiftUI
 
 struct ChatDetailView: View {
@@ -37,6 +44,10 @@ struct ChatDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(FeiQUI.chatBackground)
+        .overlay {
+            Rectangle()
+                .stroke(FeiQUI.separator, lineWidth: 1)
+        }
     }
 }
 
@@ -50,14 +61,15 @@ private struct GroupChatHeader: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            GroupAvatar(size: 42)
+            GroupAvatar(size: 46)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(group.displayName)
-                    .font(.title3.weight(.semibold))
+                    .font(.title3.weight(.bold))
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     Image(systemName: "person.3.fill")
+                        .foregroundStyle(FeiQUI.accent)
                     Text("\(group.memberCount) 位成员")
                     Text("·")
                     Text("\(onlineMemberCount) 人在线")
@@ -68,18 +80,21 @@ private struct GroupChatHeader: View {
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 3) {
-                Text("飞秋兼容群聊")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Text("按成员分别发送")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+            FeiQStatusPill(
+                title: "兼容群聊",
+                subtitle: "按成员分别发送",
+                systemImage: "checkmark.seal.fill",
+                tint: FeiQUI.accent
+            )
         }
         .padding(.horizontal, 26)
-        .padding(.vertical, 15)
+        .padding(.vertical, 16)
         .background(.regularMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(FeiQUI.separator)
+                .frame(height: 1)
+        }
     }
 }
 
@@ -88,17 +103,18 @@ private struct ChatHeader: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            ContactAvatar(name: peer.displayName, isOnline: peer.isOnline, size: 42)
+            ContactAvatar(name: peer.displayName, isOnline: peer.isOnline, size: 46)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(peer.displayName)
-                    .font(.title3.weight(.semibold))
+                    .font(.title3.weight(.bold))
                     .lineLimit(1)
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(peer.isOnline ? Color.green : Color.secondary)
-                        .frame(width: 7, height: 7)
+                    FeiQStatusDot(
+                        color: peer.isOnline ? Color.green : Color.secondary
+                    )
                     Text(peer.isOnline ? "在线" : "最近离线")
+                        .fontWeight(.medium)
                     Text("·")
                     Text(peer.detailText)
                         .lineLimit(1)
@@ -109,18 +125,21 @@ private struct ChatHeader: View {
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 3) {
-                Text("飞秋局域网")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Text(peer.ipAddress)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+            FeiQStatusPill(
+                title: "局域网",
+                subtitle: peer.ipAddress,
+                systemImage: "network",
+                tint: peer.isOnline ? Color.green : Color.secondary
+            )
         }
         .padding(.horizontal, 26)
-        .padding(.vertical, 15)
+        .padding(.vertical, 16)
         .background(.regularMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(FeiQUI.separator)
+                .frame(height: 1)
+        }
     }
 }
 
@@ -141,7 +160,7 @@ private struct MessageList: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 13) {
+                LazyVStack(spacing: 15) {
                     if messages.isEmpty {
                         Group {
                             if model.isLoadingMessages {
@@ -182,7 +201,11 @@ private struct MessageList: View {
                             .frame(maxWidth: .infinity)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 7)
-                            .background(Color.primary.opacity(0.035), in: Capsule())
+                            .background(FeiQUI.subtleFill, in: Capsule())
+                            .overlay {
+                                Capsule()
+                                    .stroke(FeiQUI.separator, lineWidth: 1)
+                            }
                             .onAppear {
                                 model.loadEarlierMessages(
                                     for: conversationID,
@@ -228,14 +251,26 @@ private struct MessageList: View {
                         }
                     }
                 }
-                .padding(.horizontal, 28)
-                .padding(.vertical, 20)
+                .padding(.horizontal, 34)
+                .padding(.vertical, 24)
                 .animation(
                     .spring(response: 0.38, dampingFraction: 0.84),
                     value: messages.count
                 )
             }
-            .background(FeiQUI.chatBackground)
+            .background {
+                ZStack {
+                    FeiQUI.chatBackground
+                    LinearGradient(
+                        colors: [FeiQUI.accent.opacity(0.045), .clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 190)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .allowsHitTesting(false)
+                }
+            }
             .scrollIndicators(.hidden)
             .onAppear {
                 if !model.isLoadingMessages {
@@ -427,6 +462,7 @@ private struct MessageBubble: View {
                 HStack(spacing: 6) {
                     Text(senderName)
                         .fontWeight(.semibold)
+                        .foregroundStyle(isOutgoing ? FeiQUI.accent : .primary)
                     Text("→")
                         .foregroundStyle(.tertiary)
                     Text(recipientName)
@@ -452,24 +488,38 @@ private struct MessageBubble: View {
                     .textSelection(.enabled)
                     .foregroundStyle(isOutgoing ? Color.white : Color.primary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(
-                        isOutgoing
-                            ? FeiQUI.accent
-                            : FeiQUI.cardBackground,
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    )
-                    .overlay {
-                        if !isOutgoing {
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 11)
+                    .background {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                                .fill(FeiQUI.cardBackground)
+                            if isOutgoing {
+                                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                FeiQUI.accent,
+                                                FeiQUI.accent.opacity(0.78)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                            }
                         }
                     }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 17, style: .continuous)
+                            .stroke(
+                                isOutgoing ? Color.white.opacity(0.16) : FeiQUI.separator,
+                                lineWidth: 1
+                            )
+                    }
                     .shadow(
-                        color: Color.black.opacity(isOutgoing ? 0.08 : 0.05),
-                        radius: 5,
-                        y: 2
+                        color: Color.black.opacity(isOutgoing ? 0.13 : 0.06),
+                        radius: 7,
+                        y: 3
                     )
                     .frame(maxWidth: 520, alignment: isOutgoing ? .trailing : .leading)
             }
@@ -507,11 +557,11 @@ private struct MessageComposer: View {
     @State private var showingEmojiPicker = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Text("新消息")
+                Label("新消息", systemImage: "pencil.line")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FeiQUI.accent)
                 Spacer()
                 Text("⌘↩ 发送")
                     .font(.caption2)
@@ -526,7 +576,11 @@ private struct MessageComposer: View {
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(.secondary)
                         .frame(width: 34, height: 34)
-                        .background(Color.primary.opacity(0.06), in: Circle())
+                        .background(FeiQUI.subtleFill, in: Circle())
+                        .overlay {
+                            Circle()
+                                .stroke(FeiQUI.separator, lineWidth: 1)
+                        }
                 }
                 .buttonStyle(.plain)
                 .help("选择表情")
@@ -537,38 +591,122 @@ private struct MessageComposer: View {
                     }
                 }
 
-                TextEditor(text: $model.draft)
-                    .font(.body)
-                    .frame(minHeight: 52, maxHeight: 110)
-                    .scrollContentBackground(.hidden)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(FeiQUI.cardBackground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $model.draft)
+                        .font(.body)
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+
+                    if model.draft.isEmpty {
+                        Text("输入消息…")
+                            .font(.body)
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 12)
+                            .allowsHitTesting(false)
                     }
+                }
+                    .frame(minHeight: 52, maxHeight: 110)
+                    .background(FeiQUI.inputBackground, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .stroke(FeiQUI.separator, lineWidth: 1)
+                    }
+                    .shadow(color: Color.black.opacity(0.035), radius: 4, y: 1)
 
                 Button {
                     model.sendDraft()
                 } label: {
-                    Label("发送", systemImage: "paperplane.fill")
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(FeiQUI.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .buttonStyle(.plain)
                 .keyboardShortcut(.return, modifiers: [.command])
                 .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .opacity(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.45 : 1)
+                .accessibilityLabel("发送")
             }
-            Text("飞秋兼容表情使用 Windows 表情码，中文自动转换为 GB18030")
+            Label("飞秋兼容表情使用 Windows 表情码，中文自动转换为 GB18030", systemImage: "info.circle")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 12)
-        .padding(.bottom, 14)
+        .padding(.horizontal, 26)
+        .padding(.top, 13)
+        .padding(.bottom, 16)
         .background(.regularMaterial)
         .overlay(alignment: .top) {
-            Divider()
+            Rectangle()
+                .fill(FeiQUI.separator)
+                .frame(height: 1)
         }
+        .shadow(color: Color.black.opacity(0.07), radius: 10, y: -4)
+    }
+}
+
+private struct EmptyChatView: View {
+    @EnvironmentObject private var model: ChatViewModel
+
+    var body: some View {
+        VStack(spacing: 20) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [FeiQUI.accent.opacity(0.18), Color.purple.opacity(0.12)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 98, height: 98)
+                    .overlay {
+                        Circle()
+                            .stroke(FeiQUI.accent.opacity(0.18), lineWidth: 1)
+                    }
+
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.system(size: 38, weight: .medium))
+                    .foregroundStyle(FeiQUI.accent)
+            }
+            .shadow(color: FeiQUI.accent.opacity(0.16), radius: 14, y: 6)
+
+            VStack(spacing: 8) {
+                Text("开始一段局域网聊天")
+                    .font(.title2.weight(.bold))
+                Text(
+                    model.isRunning
+                        ? "选择左侧联系人，和同一局域网中的飞秋用户即时沟通"
+                        : "局域网服务未启动，请先启动服务"
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button {
+                model.refreshDiscovery()
+            } label: {
+                Label("刷新联系人", systemImage: "arrow.clockwise")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        }
+        .padding(.horizontal, 44)
+        .padding(.vertical, 40)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(FeiQUI.separator, lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.08), radius: 24, y: 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(38)
     }
 }

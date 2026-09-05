@@ -1,3 +1,10 @@
+//
+//  SettingsView.swift
+//  FeiQMac
+//
+//  提供本机资料、通信服务、聊天动画设置和网络日志界面。
+//
+
 import SwiftUI
 
 struct SettingsView: View {
@@ -7,11 +14,9 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Image(systemName: "person.crop.circle.badge.checkmark")
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(FeiQUI.accent)
+                FeiQIconBadge(systemImage: "person.crop.circle.badge.checkmark")
                 Text("本机资料")
-                    .font(.title2.weight(.semibold))
+                    .font(.title2.weight(.bold))
             }
             Text("这些字段会放入飞秋的上线广播中。")
                 .font(.caption)
@@ -51,21 +56,27 @@ struct SettingsView: View {
                 .padding(.top, 8)
             HStack {
                 if model.isRunning {
-                    Button("停止服务") {
+                    Button {
                         model.stopNetwork()
+                    } label: {
+                        Label("停止服务", systemImage: "stop.circle")
                     }
                 } else {
-                    Button("启动服务") {
+                    Button {
                         model.startNetwork()
+                    } label: {
+                        Label("启动服务", systemImage: "play.circle")
                     }
                 }
                 Spacer()
                 Button("取消") {
                     dismiss()
                 }
-                Button("保存并广播") {
+                Button {
                     model.saveSettings()
                     dismiss()
+                } label: {
+                    Label("保存并广播", systemImage: "checkmark")
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -73,7 +84,7 @@ struct SettingsView: View {
         }
         .padding(24)
         .background(FeiQUI.chatBackground)
-        .frame(width: 430)
+        .frame(width: 450, height: 540)
     }
 }
 
@@ -85,11 +96,9 @@ struct LogsView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 HStack(spacing: 9) {
-                    Image(systemName: "waveform.path.ecg")
-                        .font(.system(size: 21, weight: .medium))
-                        .foregroundStyle(FeiQUI.accent)
+                    FeiQIconBadge(systemImage: "waveform.path.ecg", size: 36)
                     Text("网络日志")
-                        .font(.title2.weight(.semibold))
+                        .font(.title2.weight(.bold))
                 }
                 Spacer()
                 Button("清空") {
@@ -119,11 +128,7 @@ struct LogsView: View {
                 }
                 .padding(12)
             }
-            .background(FeiQUI.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-            }
+            .feiQSurface(fill: FeiQUI.cardBackground, cornerRadius: 12, shadow: true)
         }
         .padding(20)
         .background(FeiQUI.chatBackground)

@@ -1,3 +1,10 @@
+//
+//  GroupEditorView.swift
+//  FeiQMac
+//
+//  负责新建、编辑和删除群聊，以及选择群聊成员。
+//
+
 import SwiftUI
 
 struct GroupEditorView: View {
@@ -31,10 +38,10 @@ struct GroupEditorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                GroupAvatar(size: 38)
+                GroupAvatar(size: 42)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(editingGroup == nil ? "新建群聊" : "群聊设置")
-                        .font(.title2.weight(.semibold))
+                        .font(.title2.weight(.bold))
                     Text("群聊在 Mac 端统一管理，消息按成员兼容发送")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -50,6 +57,7 @@ struct GroupEditorView: View {
 
             TextField("群聊名称", text: $groupName)
                 .textFieldStyle(.roundedBorder)
+                .controlSize(.large)
                 .padding(.top, 18)
 
             HStack(spacing: 8) {
@@ -58,6 +66,9 @@ struct GroupEditorView: View {
                 Text("已选 \(selectedMemberIDs.count) 人")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(FeiQUI.accentSoft, in: Capsule())
                 Spacer()
             }
             .padding(.top, 18)
@@ -70,11 +81,11 @@ struct GroupEditorView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(FeiQUI.cardBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .feiQSurface(fill: FeiQUI.inputBackground, cornerRadius: 10)
             .padding(.top, 10)
 
             ScrollView {
-                LazyVStack(spacing: 3) {
+                LazyVStack(spacing: 4) {
                     if availablePeers.isEmpty {
                         Text("暂无可加入的局域网联系人")
                             .font(.caption)
@@ -129,7 +140,7 @@ struct GroupEditorView: View {
         }
         .padding(24)
         .background(FeiQUI.chatBackground)
-        .frame(width: 480, height: 620)
+        .frame(width: 500, height: 640)
         .onAppear {
             guard !didLoadInitialValues else { return }
             didLoadInitialValues = true
@@ -166,11 +177,7 @@ private struct GroupMemberSelectionRow: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(isSelected ? FeiQUI.selectedBackground :
-                          (isHovering ? Color.primary.opacity(0.05) : .clear))
-            }
+            .feiQSelectionRow(isSelected: isSelected, isHovering: isHovering)
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }

@@ -1,3 +1,10 @@
+//
+//  EmojiPickerView.swift
+//  FeiQMac
+//
+//  提供飞秋兼容表情和 Unicode 表情的选择面板。
+//
+
 import SwiftUI
 
 struct EmojiPickerView: View {
@@ -5,15 +12,16 @@ struct EmojiPickerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("选择表情")
-                .font(.headline)
+            Label("选择表情", systemImage: "face.smiling")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(FeiQUI.accent)
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(EmojiCategory.catalog) { category in
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: 8) {
                             Text(category.title)
-                                .font(.caption)
+                                .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
 
                             LazyVGrid(
@@ -35,11 +43,14 @@ struct EmojiPickerView: View {
                                 }
                             }
                         }
+                        .padding(9)
+                        .feiQSurface(fill: FeiQUI.subtleFill, cornerRadius: 12)
                     }
                 }
             }
         }
-        .padding(14)
+        .padding(15)
+        .background(FeiQUI.chatBackground)
         .frame(width: 310, height: 360)
     }
 }

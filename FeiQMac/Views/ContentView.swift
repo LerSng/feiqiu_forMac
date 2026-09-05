@@ -1,3 +1,10 @@
+//
+//  ContentView.swift
+//  FeiQMac
+//
+//  应用主界面根容器，负责组合导航分栏、工具栏以及设置、日志和群聊弹窗。
+//
+
 import SwiftUI
 
 struct ContentView: View {
@@ -12,6 +19,7 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .tint(FeiQUI.accent)
+        .background(FeiQUI.windowBackground)
         .toolbar {
             ToolbarItemGroup {
                 Button {

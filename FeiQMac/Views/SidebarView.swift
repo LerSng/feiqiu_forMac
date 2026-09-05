@@ -1,3 +1,10 @@
+//
+//  SidebarView.swift
+//  FeiQMac
+//
+//  负责左侧导航栏、联系人列表、群聊列表、搜索和在线状态展示。
+//
+
 import SwiftUI
 
 struct SidebarView: View {
@@ -27,7 +34,7 @@ struct SidebarView: View {
                 SidebarSearchField()
 
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 3) {
+                    LazyVStack(alignment: .leading, spacing: 4) {
                         PeerSectionHeader(
                             title: "在线联系人",
                             count: onlinePeers.count,
@@ -85,7 +92,7 @@ struct SidebarView: View {
                         }
                     }
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 10)
                 }
                 .scrollIndicators(.hidden)
                 .background(FeiQUI.listBackground)
@@ -96,6 +103,11 @@ struct SidebarView: View {
         }
         .background(FeiQUI.sidebarBackground)
         .frame(minWidth: 310, idealWidth: 340)
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(FeiQUI.separator)
+                .frame(width: 1)
+        }
     }
 
     @ViewBuilder
@@ -192,9 +204,11 @@ private struct SidebarRail: View {
             .padding(.bottom, 12)
         }
         .frame(width: 62)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+        .background(FeiQUI.railBackground)
         .overlay(alignment: .trailing) {
-            Divider()
+            Rectangle()
+                .fill(FeiQUI.separator)
+                .frame(width: 1)
         }
     }
 }
@@ -210,13 +224,22 @@ private struct RailButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(isSelected ? FeiQUI.accent : Color.secondary)
-                .frame(width: 38, height: 38)
+                .foregroundStyle(isSelected ? Color.white : Color.secondary)
+                .frame(width: 40, height: 40)
                 .background {
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(isSelected ? FeiQUI.selectedBackground :
+                        .fill(isSelected ? FeiQUI.accent :
                               (isHovering ? Color.primary.opacity(0.07) : .clear))
                 }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .stroke(isSelected ? Color.white.opacity(0.18) : .clear, lineWidth: 1)
+                }
+                .shadow(
+                    color: isSelected ? FeiQUI.accent.opacity(0.22) : .clear,
+                    radius: 5,
+                    y: 2
+                )
         }
         .buttonStyle(.plain)
         .help(title)
@@ -237,13 +260,19 @@ private struct SidebarProfileHeader: View {
                     .font(.headline)
                     .lineLimit(1)
                 HStack(spacing: 5) {
-                    Circle()
-                        .fill(model.isRunning ? Color.green : Color.gray)
-                        .frame(width: 7, height: 7)
+                    FeiQStatusDot(
+                        color: model.isRunning ? Color.green : Color.gray
+                    )
                     Text(model.isRunning ? "局域网在线" : "服务未启动")
                 }
                 .font(.caption)
                 .foregroundStyle(model.isRunning ? Color.secondary : Color.orange)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    (model.isRunning ? Color.green : Color.orange).opacity(0.10),
+                    in: Capsule()
+                )
             }
 
             Spacer(minLength: 4)
@@ -255,7 +284,11 @@ private struct SidebarProfileHeader: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 28, height: 28)
-                    .background(Color.primary.opacity(0.06), in: Circle())
+                    .background(FeiQUI.subtleFill, in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(FeiQUI.separator, lineWidth: 1)
+                    }
             }
             .buttonStyle(.plain)
             .help("刷新局域网用户")
@@ -290,13 +323,9 @@ private struct SidebarSearchField: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(FeiQUI.cardBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-        }
+        .feiQSurface(fill: FeiQUI.cardBackground, cornerRadius: 9, shadow: true)
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 11)
     }
 }
 
@@ -382,26 +411,11 @@ private struct GroupRow: View {
 
                 Spacer(minLength: 0)
 
-                if unreadCount > 0 {
-                    Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .frame(minWidth: 20, minHeight: 20)
-                        .padding(.horizontal, unreadCount > 9 ? 3 : 0)
-                        .background(Color.red, in: Capsule())
-                        .transition(
-                            .scale(scale: 0.45, anchor: .trailing)
-                                .combined(with: .opacity)
-                        )
-                }
+                FeiQUnreadBadge(count: unreadCount)
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(isSelected ? FeiQUI.selectedBackground :
-                          (isHovering ? Color.primary.opacity(0.055) : .clear))
-            }
+            .feiQSelectionRow(isSelected: isSelected, isHovering: isHovering)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
@@ -434,7 +448,7 @@ private struct EmptyPeerListView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .feiQSurface(fill: FeiQUI.subtleFill, cornerRadius: 10)
         .padding(.horizontal, 4)
         .padding(.vertical, 4)
     }
@@ -453,7 +467,10 @@ private struct SidebarStatusFooter: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 15)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .feiQSurface(fill: FeiQUI.subtleFill, cornerRadius: 10)
+        .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
 }
@@ -483,26 +500,11 @@ private struct PeerRow: View {
 
                 Spacer(minLength: 0)
 
-                if unreadCount > 0 {
-                    Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .frame(minWidth: 20, minHeight: 20)
-                        .padding(.horizontal, unreadCount > 9 ? 3 : 0)
-                        .background(Color.red, in: Capsule())
-                        .transition(
-                            .scale(scale: 0.45, anchor: .trailing)
-                                .combined(with: .opacity)
-                        )
-                }
+                FeiQUnreadBadge(count: unreadCount)
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(isSelected ? FeiQUI.selectedBackground :
-                          (isHovering ? Color.primary.opacity(0.055) : .clear))
-            }
+            .feiQSelectionRow(isSelected: isSelected, isHovering: isHovering)
         }
         .buttonStyle(.plain)
         .opacity(peer.isOnline ? 1 : 0.65)

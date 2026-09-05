@@ -109,7 +109,7 @@ struct GroupEditorView: View {
                 }
                 .padding(.vertical, 8)
             }
-            .scrollIndicators(.hidden)
+            .autoHidingScrollIndicators()
             .frame(maxHeight: 330)
 
             Divider()

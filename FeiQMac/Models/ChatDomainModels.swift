@@ -60,6 +60,13 @@ struct ChatHistoryPage: Sendable {
     let hasMore: Bool
 }
 
+struct ChatReceivedFile: Identifiable, Hashable, Sendable {
+    let id: String
+    let attachment: ChatAttachment
+    let receivedAt: Date
+    let senderName: String
+}
+
 enum ChatRepositoryEvent: Sendable {
     case peerUpdated(FeiQPeer)
     case peerTyping(peer: FeiQPeer, isTyping: Bool)

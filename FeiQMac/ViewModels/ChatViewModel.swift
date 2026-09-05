@@ -8,6 +8,7 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var peers: [FeiQPeer] = []
     @Published private(set) var groups: [ChatGroup] = []
     @Published private(set) var messagesByPeer: [String: [ChatMessage]] = [:]
+    @Published private(set) var receivedFilesByConversation: [String: [ChatReceivedFile]] = [:]
     @Published private(set) var unreadCountsByPeer: [String: Int] = [:]
     @Published private(set) var isLoadingMessages = false
     @Published private(set) var hasMoreMessages = false
@@ -122,6 +123,10 @@ final class ChatViewModel: ObservableObject {
 
     func messages(for conversationID: String) -> [ChatMessage] {
         messagesByPeer[conversationID] ?? []
+    }
+
+    func receivedFiles(for conversationID: String) -> [ChatReceivedFile] {
+        receivedFilesByConversation[conversationID] ?? []
     }
 
     func unreadCount(for conversationID: String) -> Int {
@@ -304,6 +309,20 @@ final class ChatViewModel: ObservableObject {
     func stopNetwork() {
         repository.stop()
         isRunning = false
+    }
+
+    func setOnlineStatus(_ isOnline: Bool) {
+        if isOnline {
+            if isRunning {
+                repository.announce()
+            } else {
+                startNetwork()
+            }
+            appendLog("已切换为在线状态")
+        } else {
+            stopNetwork()
+            appendLog("已切换为离线状态")
+        }
     }
 
     func refreshDiscovery() {
@@ -501,6 +520,11 @@ final class ChatViewModel: ObservableObject {
         case .messageReceived(let message, let peer):
             let isViewing = isViewingConversation(for: peer)
             appendMessageToCurrentConversation(message, conversationID: peer.id)
+            appendReceivedFiles(
+                from: message,
+                conversationID: peer.id,
+                senderName: peer.displayName
+            )
             if !isViewing {
                 unreadCountsByPeer[peer.id, default: 0] += 1
             }
@@ -530,6 +554,11 @@ final class ChatViewModel: ObservableObject {
             appendMessageToCurrentConversation(
                 message,
                 conversationID: group.id
+            )
+            appendReceivedFiles(
+                from: message,
+                conversationID: group.id,
+                senderName: message.senderName
             )
             if !isViewing {
                 unreadCountsByPeer[group.id, default: 0] += 1
@@ -591,11 +620,13 @@ final class ChatViewModel: ObservableObject {
         hasMoreMessages = false
 
         guard let conversationID = groupID ?? peerID else { return }
+        receivedFilesByConversation[conversationID] = []
 
         if markRead {
             markMessagesRead(for: conversationID)
         }
         loadRecentMessages(for: conversationID)
+        loadReceivedFiles(for: conversationID)
     }
 
     private func loadRecentMessages(for conversationID: String) {
@@ -636,6 +667,28 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    private func loadReceivedFiles(for conversationID: String) {
+        let requestGeneration = historyRequestGeneration
+        repository.loadReceivedFiles(
+            for: conversationID,
+            limit: 120
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self,
+                      self.selectedConversationID == conversationID,
+                      self.historyRequestGeneration == requestGeneration else {
+                    return
+                }
+                switch result {
+                case .success(let files):
+                    self.receivedFilesByConversation[conversationID] = files
+                case .failure(let error):
+                    self.appendLog("接收文件列表读取失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     private func appendMessageToCurrentConversation(
         _ message: ChatMessage,
         conversationID: String
@@ -651,6 +704,30 @@ final class ChatViewModel: ObservableObject {
             hasMoreMessages = true
         }
         messagesByPeer[conversationID] = currentMessages
+    }
+
+    private func appendReceivedFiles(
+        from message: ChatMessage,
+        conversationID: String,
+        senderName: String
+    ) {
+        guard message.direction == .incoming,
+              !message.attachments.isEmpty else {
+            return
+        }
+
+        let newFiles = message.attachments.map { attachment in
+            ChatReceivedFile(
+                id: message.id.uuidString + ":" + attachment.id,
+                attachment: attachment,
+                receivedAt: message.date,
+                senderName: senderName
+            )
+        }
+        var files = receivedFilesByConversation[conversationID] ?? []
+        let existingIDs = Set(files.map(\.id))
+        files.insert(contentsOf: newFiles.filter { !existingIDs.contains($0.id) }, at: 0)
+        receivedFilesByConversation[conversationID] = Array(files.prefix(120))
     }
 
     private func mergeMessages(

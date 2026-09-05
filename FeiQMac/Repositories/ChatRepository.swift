@@ -74,6 +74,11 @@ protocol ChatRepository: AnyObject {
         limit: Int,
         completion: @escaping (Result<ChatHistoryPage, Error>) -> Void
     )
+    func loadReceivedFiles(
+        for peerID: String,
+        limit: Int,
+        completion: @escaping (Result<[ChatReceivedFile], Error>) -> Void
+    )
 }
 
 final class DefaultChatRepository: ChatRepository {
@@ -498,6 +503,18 @@ final class DefaultChatRepository: ChatRepository {
         )
     }
 
+    func loadReceivedFiles(
+        for peerID: String,
+        limit: Int,
+        completion: @escaping (Result<[ChatReceivedFile], Error>) -> Void
+    ) {
+        historyService.loadReceivedFiles(
+            for: peerID,
+            limit: limit,
+            completion: completion
+        )
+    }
+
     private func handle(
         packet: FeiQPacket,
         from ipAddress: String,
@@ -629,7 +646,9 @@ final class DefaultChatRepository: ChatRepository {
         case .receiveMessage, .readMessage, .deleteMessage, .answerReadMessage,
              .broadcastAbsence, .broadcastNotify, .broadcastIsGetList,
              .okGetList, .getList, .getInfo, .getFileData,
-             .releaseFiles, .getDirectoryFiles, .inlineImage, .inlineImageAcknowledgement, nil:
+             .releaseFiles, .getDirectoryFiles, .legacyInlineImage,
+             .legacyInlineImageAcknowledgement, .inlineImage,
+             .inlineImageAcknowledgement, nil:
             break
         }
 

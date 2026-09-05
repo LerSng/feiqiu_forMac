@@ -94,7 +94,7 @@ struct SidebarView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 10)
                 }
-                .scrollIndicators(.hidden)
+                .autoHidingScrollIndicators()
                 .background(FeiQUI.listBackground)
 
                 Divider()
@@ -259,12 +259,28 @@ private struct SidebarProfileHeader: View {
                 Text(model.nickname.isEmpty ? "飞秋 Mac" : model.nickname)
                     .font(.headline)
                     .lineLimit(1)
-                HStack(spacing: 5) {
-                    FeiQStatusDot(
-                        color: model.isRunning ? Color.green : Color.gray
-                    )
-                    Text(model.isRunning ? "局域网在线" : "服务未启动")
+                Menu {
+                    Button {
+                        model.setOnlineStatus(true)
+                    } label: {
+                        Label("在线", systemImage: "circle.fill")
+                    }
+                    Button {
+                        model.setOnlineStatus(false)
+                    } label: {
+                        Label("离线", systemImage: "circle")
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        FeiQStatusDot(
+                            color: model.isRunning ? Color.green : Color.gray
+                        )
+                        Text(model.isRunning ? "在线" : "离线")
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .bold))
+                    }
                 }
+                .menuStyle(.borderlessButton)
                 .font(.caption)
                 .foregroundStyle(model.isRunning ? Color.secondary : Color.orange)
                 .padding(.horizontal, 8)

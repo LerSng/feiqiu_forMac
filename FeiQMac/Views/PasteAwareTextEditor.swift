@@ -18,7 +18,7 @@ struct PasteAwareTextEditor: NSViewRepresentable {
         Coordinator(self)
     }
 
-    func makeNSView(context: Context) -> PasteAwareNSTextView {
+    func makeNSView(context: Context) -> NSScrollView {
         let view = PasteAwareNSTextView()
         view.delegate = context.coordinator
         view.onPasteImage = onPasteImage
@@ -34,19 +34,32 @@ struct PasteAwareTextEditor: NSViewRepresentable {
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.textContainer?.widthTracksTextView = true
         view.textContainer?.lineFragmentPadding = 0
-        return view
+
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.verticalScrollElasticity = .none
+        scrollView.horizontalScrollElasticity = .none
+        scrollView.documentView = view
+        return scrollView
     }
 
-    func updateNSView(_ nsView: PasteAwareNSTextView, context: Context) {
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
         context.coordinator.parent = self
-        nsView.onPasteImage = onPasteImage
-        if nsView.string != text {
-            let selection = nsView.selectedRange()
-            nsView.string = text
-            nsView.setSelectedRange(NSRange(
+        guard let textView = nsView.documentView as? PasteAwareNSTextView else { return }
+        textView.onPasteImage = onPasteImage
+        if textView.string != text {
+            let selection = textView.selectedRange()
+            textView.string = text
+            textView.setSelectedRange(NSRange(
                 location: min(selection.location, (text as NSString).length),
                 length: 0
             ))
+            textView.scrollCaretIntoView()
         }
     }
 
@@ -60,12 +73,21 @@ struct PasteAwareTextEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
+            (textView as? PasteAwareNSTextView)?.scrollCaretIntoView()
         }
     }
 }
 
 final class PasteAwareNSTextView: NSTextView {
     var onPasteImage: ((Data, String?) -> Void)?
+
+    func scrollCaretIntoView() {
+        let selectedRange = selectedRange()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.scrollRangeToVisible(selectedRange)
+        }
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if Self.isCommandV(event), pasteImageIfAvailable() {

@@ -752,24 +752,42 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
             emitLog("\(transport.rawValue.uppercased()) ← \(ipAddress)：无法解析报文（\(data.count) bytes，前 96 bytes: \(preview)）")
             return
         }
-        if packet.commandType == .inlineImage {
+        if packet.commandType?.isInlineImageChunk == true {
             guard transport == .udp, let chunk = FeiQInlineImageCodec.decode(packet.additionalData) else {
                 emitLog("图片分片格式无效（\(packet.additionalData.count) bytes）")
                 return
             }
             let result = imageAssembler.accept(chunk, from: ipAddress)
             guard result.accepted else { return }
+            let acknowledgementCommand: FeiQCommand =
+                packet.commandType == .legacyInlineImage
+                    ? .legacyInlineImageAcknowledgement
+                    : .inlineImageAcknowledgement
             let ack = FeiQPacket(packetNumber: nextPacketNumber(), senderName: localName, senderHost: localHost,
-                                 command: .inlineImageAcknowledgement,
+                                 command: acknowledgementCommand,
                                  additionalText: "\(chunk.imageID)|\(chunk.index)#", versionIdentifier: feiQVersionIdentifier)
             _ = sendUDP(ack.encoded(), to: ipAddress, port: sourcePort)
+            if packet.commandType == .legacyInlineImage {
+                // A few builds send 0x77 data but still listen for the newer
+                // 0xC1 acknowledgement. Sending both is harmless and keeps
+                // the receive path compatible with both implementations.
+                let standardAck = FeiQPacket(
+                    packetNumber: nextPacketNumber(),
+                    senderName: localName,
+                    senderHost: localHost,
+                    command: .inlineImageAcknowledgement,
+                    additionalText: "\(chunk.imageID)|\(chunk.index)#",
+                    versionIdentifier: feiQVersionIdentifier
+                )
+                _ = sendUDP(standardAck.encoded(), to: ipAddress, port: sourcePort)
+            }
             if let bytes = result.data {
                 emitLog("UDP ← \(ipAddress)：内嵌图片 \(chunk.imageID) 重组完成（\(bytes.count) bytes）")
                 onInlineImage?(bytes, chunk.imageID, chunk.bitmapFlag, packet, ipAddress)
             }
             return
         }
-        if packet.commandType == .inlineImageAcknowledgement {
+        if packet.commandType?.isInlineImageAcknowledgement == true {
             if let ack = FeiQInlineImageCodec.acknowledgement(packet.additionalText) {
                 imageSends[ipAddress + "/" + ack.imageID]?.acknowledge(ack.index)
                 pumpImageSends()

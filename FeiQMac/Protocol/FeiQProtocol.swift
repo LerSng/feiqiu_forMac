@@ -23,6 +23,10 @@ enum FeiQCommand: UInt32, Sendable {
     /// FeiQ private typing notification commands used by FeiQ 2013.
     case inputting = 0x00000079
     case inputEnd = 0x0000007A
+    /// Some FeiQ 2013 builds use the private 0x77/0x78 pair for inline
+    /// image chunks and their acknowledgements instead of 0xC0/0xC1.
+    case legacyInlineImage = 0x00000077
+    case legacyInlineImageAcknowledgement = 0x00000078
     case inlineImage = 0x000000C0
     case inlineImageAcknowledgement = 0x000000C1
 
@@ -52,10 +56,20 @@ enum FeiQCommand: UInt32, Sendable {
         case getDirectoryFiles.rawValue: return .getDirectoryFiles
         case inputting.rawValue: return .inputting
         case inputEnd.rawValue: return .inputEnd
+        case legacyInlineImage.rawValue: return .legacyInlineImage
+        case legacyInlineImageAcknowledgement.rawValue: return .legacyInlineImageAcknowledgement
         case inlineImage.rawValue: return .inlineImage
         case inlineImageAcknowledgement.rawValue: return .inlineImageAcknowledgement
         default: return nil
         }
+    }
+
+    var isInlineImageChunk: Bool {
+        self == .inlineImage || self == .legacyInlineImage
+    }
+
+    var isInlineImageAcknowledgement: Bool {
+        self == .inlineImageAcknowledgement || self == .legacyInlineImageAcknowledgement
     }
 }
 
@@ -520,7 +534,7 @@ struct FeiQPacket: Sendable {
         result.append(additionalData)
         // FeiQ/IP Messenger packets are NUL-terminated. TCP is a stream, so
         // this terminator is also used by the stream decoder as a frame mark.
-        if commandType != .inlineImage && result.last != 0 {
+        if commandType?.isInlineImageChunk != true && result.last != 0 {
             result.append(0)
         }
         return result

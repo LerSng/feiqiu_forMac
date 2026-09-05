@@ -17,6 +17,11 @@ protocol ChatHistoryService: AnyObject {
         limit: Int,
         completion: @escaping (Result<ChatHistoryPage, Error>) -> Void
     )
+    func loadReceivedFiles(
+        for peerID: String,
+        limit: Int,
+        completion: @escaping (Result<[ChatReceivedFile], Error>) -> Void
+    )
     func savePeer(_ peer: FeiQPeer)
     func saveGroup(_ group: ChatGroup)
     func deleteGroup(_ groupID: String)
@@ -97,6 +102,18 @@ final class SQLiteChatHistoryService: ChatHistoryService {
         store.loadEarlierMessages(
             for: peerID,
             before: message,
+            limit: limit,
+            completion: completion
+        )
+    }
+
+    func loadReceivedFiles(
+        for peerID: String,
+        limit: Int,
+        completion: @escaping (Result<[ChatReceivedFile], Error>) -> Void
+    ) {
+        store.loadReceivedFiles(
+            for: peerID,
             limit: limit,
             completion: completion
         )

@@ -48,6 +48,7 @@ struct EmojiPickerView: View {
                     }
                 }
             }
+            .autoHidingScrollIndicators()
         }
         .padding(15)
         .background(FeiQUI.chatBackground)

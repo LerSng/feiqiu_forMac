@@ -128,6 +128,7 @@ struct LogsView: View {
                 }
                 .padding(12)
             }
+            .autoHidingScrollIndicators()
             .feiQSurface(fill: FeiQUI.cardBackground, cornerRadius: 12, shadow: true)
         }
         .padding(20)

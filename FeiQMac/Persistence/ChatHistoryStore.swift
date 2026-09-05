@@ -232,6 +232,24 @@ final class ChatHistoryStore {
         }
     }
 
+    func loadReceivedFiles(
+        for peerID: String,
+        limit: Int,
+        completion: @escaping (Result<[ChatReceivedFile], Error>) -> Void
+    ) {
+        queue.async {
+            do {
+                let files = try self.fetchReceivedFiles(
+                    for: peerID,
+                    limit: limit
+                )
+                completion(.success(files))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
     private func openDatabase() {
         guard initializationError == nil else { return }
 
@@ -629,6 +647,56 @@ final class ChatHistoryStore {
             messages: Array(rows.prefix(pageSize).reversed()),
             hasMore: hasMore
         )
+    }
+
+    private func fetchReceivedFiles(
+        for peerID: String,
+        limit: Int
+    ) throws -> [ChatReceivedFile] {
+        let pageSize = max(1, min(limit, 200))
+        let statement = try prepare(
+            """
+            SELECT id, sender_name, attachments_json, created_at
+            FROM messages
+            WHERE peer_id = ?
+              AND direction = 'incoming'
+              AND attachments_json <> '[]'
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        try bindText(peerID, at: 1, in: statement)
+        try bindInt32(Int32(pageSize), at: 2, in: statement)
+
+        var files: [ChatReceivedFile] = []
+        while true {
+            let stepResult = sqlite3_step(statement)
+            if stepResult == SQLITE_DONE {
+                break
+            }
+            guard stepResult == SQLITE_ROW else {
+                throw sqliteError()
+            }
+
+            let messageID = columnText(statement, 0)
+            let senderName = columnText(statement, 1)
+            let receivedAt = Date(
+                timeIntervalSince1970: sqlite3_column_double(statement, 3)
+            )
+            for attachment in decodeAttachments(columnText(statement, 2)) {
+                files.append(
+                    ChatReceivedFile(
+                        id: messageID + ":" + attachment.id,
+                        attachment: attachment,
+                        receivedAt: receivedAt,
+                        senderName: senderName
+                    )
+                )
+            }
+        }
+        return files
     }
 
     private func message(from statement: OpaquePointer) -> ChatMessage {

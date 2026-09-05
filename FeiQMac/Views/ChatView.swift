@@ -10,6 +10,7 @@ import AppKit
 
 struct ChatDetailView: View {
     @EnvironmentObject private var model: ChatViewModel
+    @State private var isPeerSidebarCollapsed = false
 
     var body: some View {
         Group {
@@ -22,18 +23,49 @@ struct ChatDetailView: View {
                         peer: nil
                     )
                     .id(group.id)
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                    .layoutPriority(1)
                     Divider()
                     MessageComposer()
                 }
             } else if let peer = model.selectedPeer {
                 VStack(spacing: 0) {
                     ChatHeader(peer: peer)
-                    MessageList(
-                        conversationID: peer.id,
-                        conversationTitle: peer.displayName,
-                        peer: peer
-                    )
+                    HStack(spacing: 0) {
+                        MessageList(
+                            conversationID: peer.id,
+                            conversationTitle: peer.displayName,
+                            peer: peer
+                        )
                         .id(peer.id)
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                        .layoutPriority(1)
+
+                        Divider()
+
+                        Group {
+                            if isPeerSidebarCollapsed {
+                                CollapsedPeerSidebar {
+                                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                                        isPeerSidebarCollapsed = false
+                                    }
+                                }
+                            } else {
+                                PeerContextSidebar(peer: peer) {
+                                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                                        isPeerSidebarCollapsed = true
+                                    }
+                                }
+                            }
+                        }
+                        .frame(width: isPeerSidebarCollapsed ? 40 : 252)
+                        .clipped()
+                        .animation(
+                            .spring(response: 0.32, dampingFraction: 0.86),
+                            value: isPeerSidebarCollapsed
+                        )
+                    }
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                     Divider()
                     MessageComposer()
                 }
@@ -41,7 +73,7 @@ struct ChatDetailView: View {
                 EmptyChatView()
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .background(FeiQUI.chatBackground)
         .overlay {
             Rectangle()
@@ -170,6 +202,212 @@ private struct ChatHeaderActions: View {
     }
 }
 
+private struct PeerContextSidebar: View {
+    let peer: FeiQPeer
+    let onCollapse: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Text("联系人资料")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button(action: onCollapse) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("收起右侧栏")
+            }
+
+            PeerProfileCard(peer: peer)
+
+            Spacer(minLength: 4)
+
+            ReceivedFilesPanel(conversationID: peer.id)
+                .frame(maxHeight: 260)
+        }
+        .padding(12)
+        .frame(width: 252)
+        .frame(maxHeight: .infinity)
+        .background(FeiQUI.listBackground)
+    }
+}
+
+private struct CollapsedPeerSidebar: View {
+    let onExpand: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button(action: onExpand) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 12, weight: .bold))
+                    .frame(width: 28, height: 30)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("展开右侧栏")
+
+            Spacer()
+        }
+        .padding(.top, 12)
+        .frame(width: 40)
+        .frame(maxHeight: .infinity)
+        .background(FeiQUI.listBackground)
+    }
+}
+
+private struct PeerProfileCard: View {
+    let peer: FeiQPeer
+
+    private static let lastSeenFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "MM月dd日 HH:mm"
+        return formatter
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                ContactAvatar(name: peer.displayName, isOnline: peer.isOnline, size: 48)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(peer.displayName)
+                        .font(.headline.weight(.semibold))
+                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        FeiQStatusDot(color: peer.isOnline ? .green : .secondary, size: 6)
+                        Text(peer.isOnline ? "在线" : "最近离线")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
+            PeerProfileValue(title: "主机名", value: peer.hostName)
+            PeerProfileValue(title: "IP 地址", value: peer.ipAddress)
+            if !peer.group.isEmpty {
+                PeerProfileValue(title: "分组", value: peer.group)
+            }
+            PeerProfileValue(
+                title: "最后发现",
+                value: Self.lastSeenFormatter.string(from: peer.lastSeen)
+            )
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .feiQSurface(fill: FeiQUI.cardBackground, cornerRadius: 13, shadow: true)
+    }
+}
+
+private struct PeerProfileValue: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(title)
+                .foregroundStyle(.tertiary)
+                .frame(width: 48, alignment: .leading)
+            Text(value.isEmpty ? "未提供" : value)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+        }
+        .font(.caption)
+    }
+}
+
+private struct ReceivedFilesPanel: View {
+    @EnvironmentObject private var model: ChatViewModel
+    let conversationID: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.down.document")
+                    .foregroundStyle(FeiQUI.accent)
+                Text("接收文件")
+                    .font(.subheadline.weight(.semibold))
+                Text("\(model.receivedFiles(for: conversationID).count)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+
+            if model.receivedFiles(for: conversationID).isEmpty {
+                VStack(spacing: 7) {
+                    Image(systemName: "tray")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.tertiary)
+                    Text("暂未收到文件")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 100)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(model.receivedFiles(for: conversationID)) { file in
+                            ReceivedFileRow(file: file)
+                        }
+                    }
+                }
+                .autoHidingScrollIndicators()
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .feiQSurface(fill: FeiQUI.cardBackground, cornerRadius: 13, shadow: true)
+    }
+}
+
+private struct ReceivedFileRow: View {
+    let file: ChatReceivedFile
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter
+    }()
+
+    var body: some View {
+        Button {
+            NSWorkspace.shared.activateFileViewerSelecting([file.attachment.localURL])
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: file.attachment.kind == .image ? "photo" : "doc")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(FeiQUI.accent)
+                    .frame(width: 28, height: 28)
+                    .background(FeiQUI.accentSoft, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(file.attachment.fileName)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("\(file.attachment.fileSizeDescription) · \(Self.dateFormatter.string(from: file.receivedAt))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 5)
+        }
+        .buttonStyle(.plain)
+        .help("在 Finder 中显示 \(file.attachment.fileName)")
+    }
+}
+
 private struct MessageList: View {
     @EnvironmentObject private var model: ChatViewModel
     let conversationID: String
@@ -182,6 +420,14 @@ private struct MessageList: View {
 
     private var messages: [ChatMessage] {
         model.messages(for: conversationID)
+    }
+
+    private var latestMessageID: UUID? {
+        messages.last?.id
+    }
+
+    private var latestMessageAnchorID: String {
+        "latest-message-(conversationID)"
     }
 
     var body: some View {
@@ -282,6 +528,12 @@ private struct MessageList: View {
                                 )
                         }
                     }
+
+                    // 固定底部锚点比直接定位最后一条消息更稳定，避免
+                    // LazyVStack 首次布局或进入动画期间定位失效。
+                    Color.clear
+                        .frame(height: 1)
+                        .id(latestMessageAnchorID)
                 }
                 .padding(.horizontal, 28)
                 .padding(.vertical, 18)
@@ -303,7 +555,7 @@ private struct MessageList: View {
                     .allowsHitTesting(false)
                 }
             }
-            .scrollIndicators(.hidden)
+            .autoHidingScrollIndicators()
             .onAppear {
                 if !model.isLoadingMessages {
                     didFinishInitialLoad = true
@@ -315,11 +567,11 @@ private struct MessageList: View {
                 guard !isLoading else { return }
                 if !didFinishInitialLoad {
                     didFinishInitialLoad = true
-                    scrollToLatest(using: proxy, animated: false)
+                    scrollToLatestWhenLaidOut(using: proxy, animated: false)
                 }
                 lastRenderedMessageID = messages.last?.id
             }
-            .onChange(of: messages.count) { _, _ in
+            .onChange(of: latestMessageID) { _, _ in
                 guard showingMessages,
                       didFinishInitialLoad,
                       !model.isLoadingMessages else {
@@ -328,11 +580,7 @@ private struct MessageList: View {
                 let latestMessageID = messages.last?.id
                 guard latestMessageID != lastRenderedMessageID else { return }
                 lastRenderedMessageID = latestMessageID
-                if let lastMessage = messages.last {
-                    withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
-                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                    }
-                }
+                scrollToLatestWhenLaidOut(using: proxy, animated: true)
             }
         }
     }
@@ -345,7 +593,7 @@ private struct MessageList: View {
             didFinishInitialLoad = true
             lastRenderedMessageID = messages.last?.id
         }
-        scrollToLatest(using: proxy, animated: false)
+        scrollToLatestWhenLaidOut(using: proxy, animated: false)
 
         DispatchQueue.main.async {
             if mode == .instant {
@@ -354,6 +602,12 @@ private struct MessageList: View {
                 withAnimation(.spring(response: 0.38, dampingFraction: 0.84)) {
                     showingMessages = true
                 }
+            }
+
+            // 进入动画改变了消息的可见状态，再补一次无动画定位，避免
+            // SwiftUI 在动画结束后把 ScrollView 恢复到默认顶部位置。
+            DispatchQueue.main.async {
+                scrollToLatest(using: proxy, animated: false)
             }
         }
     }
@@ -427,11 +681,11 @@ private struct MessageList: View {
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy, animated: Bool) {
-        guard let lastMessage = messages.last else { return }
+        guard !messages.isEmpty else { return }
 
         if animated {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
-                proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                proxy.scrollTo(latestMessageAnchorID, anchor: .bottom)
             }
             return
         }
@@ -439,7 +693,17 @@ private struct MessageList: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+            proxy.scrollTo(latestMessageAnchorID, anchor: .bottom)
+        }
+    }
+
+    private func scrollToLatestWhenLaidOut(
+        using proxy: ScrollViewProxy,
+        animated: Bool
+    ) {
+        scrollToLatest(using: proxy, animated: animated)
+        DispatchQueue.main.async {
+            scrollToLatest(using: proxy, animated: animated)
         }
     }
 
@@ -724,7 +988,103 @@ private struct ImagePreviewView: View {
 
     var body: some View {
         ZStack {
-            Color.black
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                previewToolbar
+                previewCanvas
+                previewFooter
+            }
+            .frame(minWidth: 720, minHeight: 540)
+            .background(Color.black.opacity(0.94))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.white.opacity(0.14), lineWidth: 1)
+            }
+            .shadow(color: Color.black.opacity(0.20), radius: 28, y: 12)
+        }
+        .frame(minWidth: 720, minHeight: 540)
+        .background(.clear)
+        .presentationBackground(.clear)
+        .onAppear {
+            image = NSImage(contentsOf: attachment.localURL)
+        }
+    }
+
+    private var previewToolbar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "photo")
+                .foregroundStyle(FeiQUI.accent)
+
+            Text(attachment.fileName)
+                .font(.headline)
+                .lineLimit(1)
+
+            Spacer()
+
+            Button {
+                resetImageTransform()
+            } label: {
+                Image(systemName: "arrow.counterclockwise")
+            }
+            .help("重置缩放和位置")
+
+            Button {
+                scale = min(5, scale + 0.25)
+                scaleAtGestureStart = scale
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .help("放大")
+
+            Button {
+                scale = max(0.35, scale - 0.25)
+                scaleAtGestureStart = scale
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .help("缩小")
+
+            Button {
+                rotation += .degrees(90)
+            } label: {
+                Image(systemName: "rotate.right")
+            }
+            .help("旋转 90 度")
+
+            Button {
+                copyImageToPasteboard()
+            } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .help("复制图片")
+
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([attachment.localURL])
+            } label: {
+                Image(systemName: "folder")
+            }
+            .help("在 Finder 中显示")
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .help("关闭")
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 16, weight: .medium))
+        .foregroundStyle(.white.opacity(0.88))
+        .padding(.horizontal, 18)
+        .padding(.vertical, 13)
+    }
+
+    private var previewCanvas: some View {
+        ZStack {
+            Color.clear
 
             if let image {
                 GeometryReader { proxy in
@@ -734,11 +1094,12 @@ private struct ImagePreviewView: View {
                         .scaledToFit()
                         .frame(
                             width: max(1, proxy.size.width - 84),
-                            height: max(1, proxy.size.height - 112)
+                            height: max(1, proxy.size.height - 72)
                         )
                         .scaleEffect(scale)
                         .rotationEffect(rotation)
                         .offset(offset)
+                        .shadow(color: .black.opacity(0.34), radius: 18, y: 8)
                         .contentShape(Rectangle())
                         .gesture(
                             MagnificationGesture()
@@ -779,94 +1140,21 @@ private struct ImagePreviewView: View {
                     .controlSize(.large)
                     .tint(.white)
             }
-
-            VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    Text(attachment.fileName)
-                        .font(.headline)
-                        .lineLimit(1)
-
-                    Spacer()
-
-                    Button {
-                        resetImageTransform()
-                    } label: {
-                        Image(systemName: "arrow.counterclockwise")
-                    }
-                    .help("重置缩放和位置")
-
-                    Button {
-                        scale = min(5, scale + 0.25)
-                        scaleAtGestureStart = scale
-                    } label: {
-                        Image(systemName: "plus.magnifyingglass")
-                    }
-                    .help("放大")
-
-                    Button {
-                        scale = max(0.35, scale - 0.25)
-                        scaleAtGestureStart = scale
-                    } label: {
-                        Image(systemName: "minus.magnifyingglass")
-                    }
-                    .help("缩小")
-
-                    Button {
-                        rotation += .degrees(90)
-                    } label: {
-                        Image(systemName: "rotate.right")
-                    }
-                    .help("旋转 90 度")
-
-                    Button {
-                        copyImageToPasteboard()
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                    }
-                    .help("复制图片")
-
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([attachment.localURL])
-                    } label: {
-                        Image(systemName: "folder")
-                    }
-                    .help("在 Finder 中显示")
-
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .help("关闭")
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 14)
-                .background(.ultraThinMaterial)
-
-                Spacer()
-
-                HStack {
-                    Text("双击放大 · 拖动查看 · 触控板捏合缩放")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.72))
-                    Spacer()
-                    Text(attachment.fileSizeDescription)
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.72))
-                }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial)
-            }
         }
-        .frame(minWidth: 720, minHeight: 540)
-        .background(Color.black)
-        .onAppear {
-            image = NSImage(contentsOf: attachment.localURL)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var previewFooter: some View {
+        HStack {
+            Text("双击放大 · 拖动查看 · 触控板捏合缩放")
+                .font(.caption)
+            Spacer()
+            Text(attachment.fileSizeDescription)
+                .font(.caption)
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .foregroundStyle(.white.opacity(0.62))
     }
 
     private func resetImageTransform() {
@@ -913,8 +1201,8 @@ private struct MessageComposer: View {
                         Text("输入消息")
                             .font(.body)
                             .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 15)
-                            .padding(.vertical, 14)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
                             .allowsHitTesting(false)
                     }
                 }
@@ -1005,7 +1293,7 @@ private struct DraftAttachmentStrip: View {
     let onRemove: (String) -> Void
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal, showsIndicators: true) {
             HStack(spacing: 8) {
                 ForEach(attachments) { attachment in
                     ZStack(alignment: .topTrailing) {
@@ -1030,6 +1318,7 @@ private struct DraftAttachmentStrip: View {
             }
             .padding(.vertical, 2)
         }
+        .autoHidingScrollIndicators()
         .frame(height: 76)
     }
 }

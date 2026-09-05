@@ -13,10 +13,13 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var hasMoreMessages = false
     @Published private(set) var logs: [String] = []
     @Published private(set) var isRunning = false
+    @Published private(set) var typingPeerIDs: Set<String> = []
 
     @Published var selectedPeerID: String?
     @Published var selectedGroupID: String?
     @Published var draft = ""
+    @Published private(set) var draftAttachments: [ChatAttachment] = []
+    @Published private(set) var isPreparingPastedImage = false
     @Published var searchText = ""
     @Published var nickname: String
     @Published var hostName: String
@@ -31,6 +34,9 @@ final class ChatViewModel: ObservableObject {
     private let settingsRepository: AppSettingsRepository
     private var offlineTimer: Timer?
     private var historyRequestGeneration = 0
+    private var typingTimers: [String: DispatchWorkItem] = [:]
+    private var localTypingPeerID: String?
+    private var localTypingStopWorkItem: DispatchWorkItem?
 
     private static let messagePageSize = 60
     private static let inMemoryMessageLimit = 240
@@ -120,6 +126,48 @@ final class ChatViewModel: ObservableObject {
 
     func unreadCount(for conversationID: String) -> Int {
         max(0, unreadCountsByPeer[conversationID] ?? 0)
+    }
+
+    func isPeerTyping(_ peerID: String) -> Bool {
+        typingPeerIDs.contains(peerID)
+    }
+
+    /// Starts or refreshes the local typing notification for the selected
+    /// peer. The stop packet is debounced so Windows FeiQ does not receive a
+    /// start/stop pair for every keystroke.
+    func draftDidChange() {
+        guard let peer = selectedPeer else {
+            stopLocalTyping()
+            return
+        }
+
+        guard !draft.isEmpty || !draftAttachments.isEmpty else {
+            stopLocalTyping()
+            return
+        }
+
+        if localTypingPeerID != peer.id {
+            stopLocalTyping()
+            localTypingPeerID = peer.id
+            repository.updateTyping(isTyping: true, for: peer)
+        }
+
+        localTypingStopWorkItem?.cancel()
+        let stopWorkItem = DispatchWorkItem { [weak self] in
+            self?.stopLocalTyping()
+        }
+        localTypingStopWorkItem = stopWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: stopWorkItem)
+    }
+
+    func stopLocalTyping() {
+        localTypingStopWorkItem?.cancel()
+        localTypingStopWorkItem = nil
+
+        guard let peerID = localTypingPeerID else { return }
+        localTypingPeerID = nil
+        guard let peer = peers.first(where: { $0.id == peerID }) else { return }
+        repository.updateTyping(isTyping: false, for: peer)
     }
 
     func selectPeer(_ peerID: String?) {
@@ -283,14 +331,19 @@ final class ChatViewModel: ObservableObject {
 
     func sendDraft() {
         let displayText = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !displayText.isEmpty else { return }
+        let attachments = draftAttachments
+        guard !isPreparingPastedImage,
+              !displayText.isEmpty || !attachments.isEmpty else { return }
+
+        stopLocalTyping()
 
         if let peer = selectedPeer {
             let message = ChatMessage(
                 direction: .outgoing,
                 text: displayText,
                 senderName: nickname,
-                recipientName: peer.displayName
+                recipientName: peer.displayName,
+                attachments: attachments
             )
             appendMessageToCurrentConversation(message, conversationID: peer.id)
             repository.sendMessage(
@@ -303,7 +356,8 @@ final class ChatViewModel: ObservableObject {
                 direction: .outgoing,
                 text: displayText,
                 senderName: nickname,
-                recipientName: group.displayName
+                recipientName: group.displayName,
+                attachments: attachments
             )
             appendMessageToCurrentConversation(message, conversationID: group.id)
             repository.sendGroupMessage(
@@ -316,10 +370,37 @@ final class ChatViewModel: ObservableObject {
         }
 
         draft = ""
+        draftAttachments.removeAll()
     }
 
     func insertEmoji(_ emoji: String) {
         draft.append(emoji)
+    }
+
+    func pasteImage(_ data: Data, suggestedFileName: String?) {
+        guard selectedConversationID != nil else { return }
+        isPreparingPastedImage = true
+        repository.preparePastedImage(
+            data: data,
+            suggestedFileName: suggestedFileName
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isPreparingPastedImage = false
+                switch result {
+                case .success(let attachment):
+                    guard self.selectedConversationID != nil else { return }
+                    self.draftAttachments.append(attachment)
+                    self.draftDidChange()
+                case .failure(let error):
+                    self.appendLog("粘贴图片失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func removeDraftAttachment(_ attachmentID: String) {
+        draftAttachments.removeAll { $0.id == attachmentID }
     }
 
     func chooseAndSendImage() {
@@ -397,6 +478,24 @@ final class ChatViewModel: ObservableObject {
             mergePeer(peer)
             if selectedConversationID == nil, peer.isOnline {
                 selectPeer(peer.id)
+            }
+
+        case .peerTyping(let peer, let isTyping):
+            typingTimers[peer.id]?.cancel()
+            typingTimers.removeValue(forKey: peer.id)
+            if isTyping {
+                typingPeerIDs.insert(peer.id)
+                let clearWorkItem = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    self.typingPeerIDs.remove(peer.id)
+                    self.typingTimers.removeValue(forKey: peer.id)
+                }
+                typingTimers[peer.id] = clearWorkItem
+                // UDP can drop the explicit input-end packet. Clearing stale
+                // state keeps the header correct even with older FeiQ builds.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: clearWorkItem)
+            } else {
+                typingPeerIDs.remove(peer.id)
             }
 
         case .messageReceived(let message, let peer):
@@ -482,6 +581,10 @@ final class ChatViewModel: ObservableObject {
 
         selectedPeerID = peerID
         selectedGroupID = groupID
+        stopLocalTyping()
+        draft = ""
+        draftAttachments.removeAll()
+        isPreparingPastedImage = false
         messagesByPeer.removeAll()
         historyRequestGeneration += 1
         isLoadingMessages = false
@@ -665,14 +768,16 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func notificationPreview(for message: ChatMessage) -> String {
-        if !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return message.text
+        let text = FeiQMessageFormatter.displayText(message.text)
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return text
         }
         return message.attachments.isEmpty ? "收到新消息" : "发送了一张图片"
     }
 
     func displayText(for message: ChatMessage) -> String {
-        FeiQInlineImageCodec.replacingMarkers(in: message.text,
+        let formattedText = FeiQMessageFormatter.displayText(message.text)
+        return FeiQInlineImageCodec.replacingMarkers(in: formattedText,
             with: message.attachments.isEmpty ? "[历史图片未保存，请对方重新发送]" : "")
     }
 

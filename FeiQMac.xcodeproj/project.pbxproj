@@ -34,6 +34,7 @@
 		A1000000000000000000006B /* GroupEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000007B /* GroupEditorView.swift */; };
 		A1000000000000000000006C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000007C /* SettingsView.swift */; };
 		A1000000000000000000006D /* CommonViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000007D /* CommonViews.swift */; };
+		B20000000000000000000003 /* PasteAwareTextEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* PasteAwareTextEditor.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -66,6 +67,7 @@
 		A1000000000000000000007B /* GroupEditorView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = GroupEditorView.swift; sourceTree = "<group>"; };
 		A1000000000000000000007C /* SettingsView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A1000000000000000000007D /* CommonViews.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CommonViews.swift; sourceTree = "<group>"; };
+		B20000000000000000000004 /* PasteAwareTextEditor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PasteAwareTextEditor.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -191,6 +193,7 @@
 				A1000000000000000000007B /* GroupEditorView.swift */,
 				A1000000000000000000007C /* SettingsView.swift */,
 				A1000000000000000000007D /* CommonViews.swift */,
+				B20000000000000000000004 /* PasteAwareTextEditor.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -306,6 +309,7 @@
 				A1000000000000000000006B /* GroupEditorView.swift in Sources */,
 				A1000000000000000000006C /* SettingsView.swift in Sources */,
 				A1000000000000000000006D /* CommonViews.swift in Sources */,
+				B20000000000000000000003 /* PasteAwareTextEditor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

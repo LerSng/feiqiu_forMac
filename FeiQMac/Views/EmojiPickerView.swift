@@ -64,10 +64,9 @@ private struct EmojiCategory: Identifiable {
         EmojiCategory(
             id: "feiQCompatible",
             title: "飞秋兼容（Windows）",
-            // These are the three FeiQ 2013 emoticons currently mapped by
-            // the ViewModel's chat pipeline. Keeping the picker data local
-            // to the view avoids coupling the UI to the wire formatter.
-            emojis: ["😶", "🥺", "😮"]
+            // These expressions are converted back to FeiQ text codes by
+            // the network formatter before the packet is sent.
+            emojis: ["🙂", "🔄", "✊", "❤️", "😶", "🥺", "😮"]
         ),
         EmojiCategory(
             id: "faces",

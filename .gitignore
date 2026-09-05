@@ -40,3 +40,6 @@ Packages/
 # 常见 IDE 本地配置
 .idea/
 .vscode/
+
+#md文件
+feiqiu-README.md

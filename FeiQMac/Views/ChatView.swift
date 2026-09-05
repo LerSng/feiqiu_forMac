@@ -16,7 +16,6 @@ struct ChatDetailView: View {
             if let group = model.selectedGroup {
                 VStack(spacing: 0) {
                     GroupChatHeader(group: group)
-                    Divider()
                     MessageList(
                         conversationID: group.id,
                         conversationTitle: group.displayName,
@@ -29,7 +28,6 @@ struct ChatDetailView: View {
             } else if let peer = model.selectedPeer {
                 VStack(spacing: 0) {
                     ChatHeader(peer: peer)
-                    Divider()
                     MessageList(
                         conversationID: peer.id,
                         conversationTitle: peer.displayName,
@@ -62,11 +60,11 @@ private struct GroupChatHeader: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            GroupAvatar(size: 46)
+            GroupAvatar(size: 40)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(group.displayName)
-                    .font(.title3.weight(.bold))
+                    .font(.title2.weight(.semibold))
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     Image(systemName: "person.3.fill")
@@ -81,16 +79,13 @@ private struct GroupChatHeader: View {
 
             Spacer()
 
-            FeiQStatusPill(
-                title: "群聊中继",
-                subtitle: "Mac 转发给成员",
-                systemImage: "arrow.triangle.branch",
-                tint: FeiQUI.accent
-            )
+            ChatHeaderActions {
+                model.showingLogs = true
+            }
         }
-        .padding(.horizontal, 26)
-        .padding(.vertical, 16)
-        .background(.regularMaterial)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 13)
+        .background(FeiQUI.chatBackground)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(FeiQUI.separator)
@@ -100,25 +95,32 @@ private struct GroupChatHeader: View {
 }
 
 private struct ChatHeader: View {
+    @EnvironmentObject private var model: ChatViewModel
     let peer: FeiQPeer
 
     var body: some View {
         HStack(spacing: 12) {
-            ContactAvatar(name: peer.displayName, isOnline: peer.isOnline, size: 46)
+            ContactAvatar(name: peer.displayName, isOnline: peer.isOnline, size: 40)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(peer.displayName)
-                    .font(.title3.weight(.bold))
+                    .font(.title2.weight(.semibold))
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     FeiQStatusDot(
-                        color: peer.isOnline ? Color.green : Color.secondary
+                        color: model.isPeerTyping(peer.id)
+                            ? FeiQUI.accent
+                            : (peer.isOnline ? Color.green : Color.secondary)
                     )
-                    Text(peer.isOnline ? "在线" : "最近离线")
+                    Text(model.isPeerTyping(peer.id)
+                        ? "对方正在输入…"
+                        : (peer.isOnline ? "在线" : "最近离线"))
                         .fontWeight(.medium)
-                    Text("·")
-                    Text(peer.detailText)
-                        .lineLimit(1)
+                    if !model.isPeerTyping(peer.id) {
+                        Text("·")
+                        Text(peer.detailText)
+                            .lineLimit(1)
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -126,21 +128,45 @@ private struct ChatHeader: View {
 
             Spacer()
 
-            FeiQStatusPill(
-                title: "局域网",
-                subtitle: peer.ipAddress,
-                systemImage: "network",
-                tint: peer.isOnline ? Color.green : Color.secondary
-            )
+            ChatHeaderActions {
+                model.showingLogs = true
+            }
         }
-        .padding(.horizontal, 26)
-        .padding(.vertical, 16)
-        .background(.regularMaterial)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 13)
+        .background(FeiQUI.chatBackground)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(FeiQUI.separator)
                 .frame(height: 1)
         }
+    }
+}
+
+private struct ChatHeaderActions: View {
+    let showLogs: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(action: showLogs) {
+                Image(systemName: "ellipsis.bubble")
+                    .font(.system(size: 20, weight: .medium))
+                    .frame(width: 34, height: 34)
+            }
+            .help("查看网络日志")
+
+            Menu {
+                Button("网络日志", action: showLogs)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 18, weight: .bold))
+                    .frame(width: 30, height: 34)
+            }
+            .menuStyle(.borderlessButton)
+            .help("更多操作")
+        }
+        .foregroundStyle(.secondary)
+        .buttonStyle(.plain)
     }
 }
 
@@ -226,7 +252,12 @@ private struct MessageList: View {
                             }
                         }
 
-                        ForEach(messages) { message in
+                        ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
+                            if shouldShowTimeSeparator(at: index) {
+                                MessageTimeSeparator(date: message.date)
+                                    .transition(.opacity)
+                            }
+
                             MessageBubble(
                                 message: message,
                                 conversationName: conversationTitle,
@@ -252,8 +283,8 @@ private struct MessageList: View {
                         }
                     }
                 }
-                .padding(.horizontal, 34)
-                .padding(.vertical, 24)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 18)
                 .animation(
                     .spring(response: 0.38, dampingFraction: 0.84),
                     value: messages.count
@@ -411,14 +442,29 @@ private struct MessageList: View {
             proxy.scrollTo(lastMessage.id, anchor: .bottom)
         }
     }
+
+    private func shouldShowTimeSeparator(at index: Int) -> Bool {
+        guard index > 0 else { return true }
+        let previous = messages[index - 1].date
+        let current = messages[index].date
+        let calendar = Calendar.current
+        if !calendar.isDate(previous, inSameDayAs: current) {
+            return true
+        }
+        return current.timeIntervalSince(previous) >= 5 * 60
+    }
 }
 
-private struct MessageBubble: View {
-    @EnvironmentObject private var model: ChatViewModel
-    let message: ChatMessage
-    let conversationName: String
-    let peer: FeiQPeer?
+private struct MessageTimeSeparator: View {
+    let date: Date
     @State private var showingFullDate = false
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 
     private static let fullDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -427,6 +473,31 @@ private struct MessageBubble: View {
         formatter.dateFormat = "yyyy年MM月dd日 HH:mm:ss"
         return formatter
     }()
+
+    var body: some View {
+        Button {
+            showingFullDate.toggle()
+        } label: {
+            Text(showingFullDate
+                ? Self.fullDateFormatter.string(from: date)
+                : Self.timeFormatter.string(from: date))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .help(showingFullDate ? "点击显示简略时间" : "点击查看完整日期和时间")
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+}
+
+private struct MessageBubble: View {
+    @EnvironmentObject private var model: ChatViewModel
+    let message: ChatMessage
+    let conversationName: String
+    let peer: FeiQPeer?
 
     private var isOutgoing: Bool {
         message.direction == .outgoing
@@ -450,10 +521,6 @@ private struct MessageBubble: View {
         return value.isEmpty ? "未知收件人" : value
     }
 
-    private var fullDateText: String {
-        Self.fullDateFormatter.string(from: message.date)
-    }
-
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
             if !isOutgoing {
@@ -468,16 +535,8 @@ private struct MessageBubble: View {
                     Text("→")
                         .foregroundStyle(.tertiary)
                     Text(recipientName)
-                    Text("·")
-                    Button {
-                        showingFullDate.toggle()
-                    } label: {
-                        Text(showingFullDate ? fullDateText : timeText)
-                    }
-                    .buttonStyle(.plain)
-                    .help(showingFullDate ? "点击显示简略时间" : "点击显示完整日期和时间")
                 }
-                .font(.caption2.weight(.medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -489,42 +548,37 @@ private struct MessageBubble: View {
                         .lineSpacing(2)
                         .multilineTextAlignment(.leading)
                         .textSelection(.enabled)
-                        .foregroundStyle(isOutgoing ? Color.white : Color.primary)
+                        .foregroundStyle(Color.primary)
                         .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 15)
-                        .padding(.vertical, 11)
-                        .background {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                    .fill(FeiQUI.cardBackground)
-                                if isOutgoing {
-                                    RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [
-                                                    FeiQUI.accent,
-                                                    FeiQUI.accent.opacity(0.78)
-                                                ],
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            )
-                                        )
-                                }
-                            }
-                        }
+                        .padding(.leading, isOutgoing ? 15 : 22)
+                        .padding(.trailing, isOutgoing ? 22 : 15)
+                        .padding(.vertical, 10)
+                        .background(
+                            FeiQMessageBubbleShape(isOutgoing: isOutgoing)
+                                .fill(isOutgoing ? FeiQUI.outgoingBubble : FeiQUI.incomingBubble)
+                        )
                         .overlay {
-                            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                            FeiQMessageBubbleShape(isOutgoing: isOutgoing)
                                 .stroke(
-                                    isOutgoing ? Color.white.opacity(0.16) : FeiQUI.separator,
+                                    isOutgoing
+                                        ? FeiQUI.outgoingBubble.opacity(0.55)
+                                        : FeiQUI.separator,
                                     lineWidth: 1
                                 )
                         }
                         .shadow(
-                            color: Color.black.opacity(isOutgoing ? 0.13 : 0.06),
-                            radius: 7,
-                            y: 3
+                            color: Color.black.opacity(0.045),
+                            radius: 4,
+                            y: 2
                         )
                         .frame(maxWidth: 520, alignment: isOutgoing ? .trailing : .leading)
+                        .contextMenu {
+                            Button("复制文本") {
+                                let pasteboard = NSPasteboard.general
+                                pasteboard.clearContents()
+                                pasteboard.setString(model.displayText(for: message), forType: .string)
+                            }
+                        }
                 }
 
                 ForEach(message.attachments) { attachment in
@@ -548,23 +602,50 @@ private struct MessageBubble: View {
         )
     }
 
-    private var timeText: String {
-        Self.timeFormatter.string(from: message.date)
-    }
+}
 
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
+private struct FeiQMessageBubbleShape: Shape {
+    let isOutgoing: Bool
+
+    func path(in rect: CGRect) -> Path {
+        let tailWidth: CGFloat = 8
+        let bubbleRect = isOutgoing
+            ? CGRect(x: 0, y: 0, width: max(0, rect.width - tailWidth), height: rect.height)
+            : CGRect(x: tailWidth, y: 0, width: max(0, rect.width - tailWidth), height: rect.height)
+        var path = Path()
+        path.addRoundedRect(in: bubbleRect, cornerSize: CGSize(width: 13, height: 13))
+
+        let tailY = min(max(18, rect.height * 0.48), max(18, rect.height - 9))
+        if isOutgoing {
+            path.move(to: CGPoint(x: bubbleRect.maxX - 1, y: tailY - 7))
+            path.addQuadCurve(
+                to: CGPoint(x: rect.maxX, y: tailY),
+                control: CGPoint(x: rect.maxX - 1, y: tailY - 1)
+            )
+            path.addQuadCurve(
+                to: CGPoint(x: bubbleRect.maxX - 1, y: tailY + 7),
+                control: CGPoint(x: rect.maxX - 1, y: tailY + 1)
+            )
+        } else {
+            path.move(to: CGPoint(x: bubbleRect.minX + 1, y: tailY - 7))
+            path.addQuadCurve(
+                to: CGPoint(x: rect.minX, y: tailY),
+                control: CGPoint(x: rect.minX + 1, y: tailY - 1)
+            )
+            path.addQuadCurve(
+                to: CGPoint(x: bubbleRect.minX + 1, y: tailY + 7),
+                control: CGPoint(x: rect.minX + 1, y: tailY + 1)
+            )
+        }
+        return path
+    }
 }
 
 private struct ImageAttachmentView: View {
     let attachment: ChatAttachment
     @State private var image: NSImage?
     @State private var didAttemptLoad = false
+    @State private var showingPreview = false
 
     var body: some View {
         Group {
@@ -600,12 +681,208 @@ private struct ImageAttachmentView: View {
             image = NSImage(contentsOf: attachment.localURL)
             didAttemptLoad = true
         }
+        .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .onTapGesture {
+            guard attachment.isAvailable else { return }
+            showingPreview = true
+        }
         .contextMenu {
+            Button("放大查看") {
+                showingPreview = true
+            }
+            Button("复制图片") {
+                copyImageToPasteboard()
+            }
             Button("在 Finder 中显示") {
                 NSWorkspace.shared.activateFileViewerSelecting([attachment.localURL])
             }
         }
         .help("\(attachment.fileName) · \(attachment.fileSizeDescription)")
+        .sheet(isPresented: $showingPreview) {
+            ImagePreviewView(attachment: attachment)
+        }
+    }
+
+    private func copyImageToPasteboard() {
+        guard let image = image ?? NSImage(contentsOf: attachment.localURL),
+              let tiff = image.tiffRepresentation else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setData(tiff, forType: .tiff)
+    }
+}
+
+private struct ImagePreviewView: View {
+    let attachment: ChatAttachment
+    @Environment(\.dismiss) private var dismiss
+    @State private var image: NSImage?
+    @State private var scale: CGFloat = 1
+    @State private var scaleAtGestureStart: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var offsetAtGestureStart: CGSize = .zero
+    @State private var rotation: Angle = .zero
+
+    var body: some View {
+        ZStack {
+            Color.black
+
+            if let image {
+                GeometryReader { proxy in
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(
+                            width: max(1, proxy.size.width - 84),
+                            height: max(1, proxy.size.height - 112)
+                        )
+                        .scaleEffect(scale)
+                        .rotationEffect(rotation)
+                        .offset(offset)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            MagnificationGesture()
+                                .onChanged { value in
+                                    scale = min(5, max(0.35, scaleAtGestureStart * value))
+                                }
+                                .onEnded { _ in
+                                    scaleAtGestureStart = scale
+                                }
+                        )
+                        .simultaneousGesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    offset = CGSize(
+                                        width: offsetAtGestureStart.width + value.translation.width,
+                                        height: offsetAtGestureStart.height + value.translation.height
+                                    )
+                                }
+                                .onEnded { _ in
+                                    offsetAtGestureStart = offset
+                                }
+                        )
+                        .onTapGesture(count: 2) {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                if scale > 1.1 {
+                                    resetImageTransform()
+                                } else {
+                                    scale = 2
+                                    scaleAtGestureStart = 2
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
+                }
+            } else {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+            }
+
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Text(attachment.fileName)
+                        .font(.headline)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    Button {
+                        resetImageTransform()
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                    }
+                    .help("重置缩放和位置")
+
+                    Button {
+                        scale = min(5, scale + 0.25)
+                        scaleAtGestureStart = scale
+                    } label: {
+                        Image(systemName: "plus.magnifyingglass")
+                    }
+                    .help("放大")
+
+                    Button {
+                        scale = max(0.35, scale - 0.25)
+                        scaleAtGestureStart = scale
+                    } label: {
+                        Image(systemName: "minus.magnifyingglass")
+                    }
+                    .help("缩小")
+
+                    Button {
+                        rotation += .degrees(90)
+                    } label: {
+                        Image(systemName: "rotate.right")
+                    }
+                    .help("旋转 90 度")
+
+                    Button {
+                        copyImageToPasteboard()
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .help("复制图片")
+
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([attachment.localURL])
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .help("在 Finder 中显示")
+
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .help("关闭")
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 14)
+                .background(.ultraThinMaterial)
+
+                Spacer()
+
+                HStack {
+                    Text("双击放大 · 拖动查看 · 触控板捏合缩放")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.72))
+                    Spacer()
+                    Text(attachment.fileSizeDescription)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.72))
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial)
+            }
+        }
+        .frame(minWidth: 720, minHeight: 540)
+        .background(Color.black)
+        .onAppear {
+            image = NSImage(contentsOf: attachment.localURL)
+        }
+    }
+
+    private func resetImageTransform() {
+        scale = 1
+        scaleAtGestureStart = 1
+        offset = .zero
+        offsetAtGestureStart = .zero
+        rotation = .zero
+    }
+
+    private func copyImageToPasteboard() {
+        guard let image = image ?? NSImage(contentsOf: attachment.localURL),
+              let tiff = image.tiffRepresentation else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setData(tiff, forType: .tiff)
     }
 }
 
@@ -614,110 +891,146 @@ private struct MessageComposer: View {
     @State private var showingEmojiPicker = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Label("新消息", systemImage: "pencil.line")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(FeiQUI.accent)
-                Spacer()
-                Text("⌘↩ 发送")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+        VStack(spacing: 0) {
+            if !model.draftAttachments.isEmpty {
+                DraftAttachmentStrip(attachments: model.draftAttachments) { attachmentID in
+                    model.removeDraftAttachment(attachmentID)
+                }
             }
 
-            HStack(alignment: .bottom, spacing: 10) {
-                Button {
-                    model.chooseAndSendImage()
-                } label: {
-                    Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 34, height: 34)
-                        .background(FeiQUI.subtleFill, in: Circle())
-                        .overlay {
-                            Circle()
-                                .stroke(FeiQUI.separator, lineWidth: 1)
-                        }
-                }
-                .buttonStyle(.plain)
-                .help("发送图片")
-                .disabled(model.selectedConversationID == nil)
-
-                Button {
-                    showingEmojiPicker.toggle()
-                } label: {
-                    Image(systemName: "face.smiling")
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 34, height: 34)
-                        .background(FeiQUI.subtleFill, in: Circle())
-                        .overlay {
-                            Circle()
-                                .stroke(FeiQUI.separator, lineWidth: 1)
-                        }
-                }
-                .buttonStyle(.plain)
-                .help("选择表情")
-                .popover(isPresented: $showingEmojiPicker, arrowEdge: .bottom) {
-                    EmojiPickerView { emoji in
-                        model.insertEmoji(emoji)
-                        showingEmojiPicker = false
-                    }
-                }
-
+            VStack(spacing: 0) {
                 ZStack(alignment: .topLeading) {
-                    TextEditor(text: $model.draft)
+                    PasteAwareTextEditor(
+                        text: $model.draft,
+                        onPasteImage: { data, fileName in
+                            model.pasteImage(data, suggestedFileName: fileName)
+                        }
+                    )
                         .font(.body)
-                        .scrollContentBackground(.hidden)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
+                        .frame(maxWidth: .infinity, minHeight: 92, maxHeight: 150)
 
-                    if model.draft.isEmpty {
-                        Text("输入消息…")
+                    if model.draft.isEmpty && model.draftAttachments.isEmpty {
+                        Text("输入消息")
                             .font(.body)
                             .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 13)
-                            .padding(.vertical, 12)
+                            .padding(.horizontal, 15)
+                            .padding(.vertical, 14)
                             .allowsHitTesting(false)
                     }
                 }
-                    .frame(minHeight: 52, maxHeight: 110)
-                    .background(FeiQUI.inputBackground, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .stroke(FeiQUI.separator, lineWidth: 1)
-                    }
-                    .shadow(color: Color.black.opacity(0.035), radius: 4, y: 1)
-
-                Button {
-                    model.sendDraft()
-                } label: {
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 40, height: 40)
-                        .background(FeiQUI.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .frame(minHeight: 92, maxHeight: 150)
+                .onChange(of: model.draft) { _, _ in
+                    model.draftDidChange()
                 }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.return, modifiers: [.command])
-                .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .opacity(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.45 : 1)
-                .accessibilityLabel("发送")
+
+                Divider()
+                    .opacity(0.7)
+
+                HStack(spacing: 14) {
+                    Button {
+                        showingEmojiPicker.toggle()
+                    } label: {
+                        Image(systemName: "face.smiling")
+                    }
+                    .popover(isPresented: $showingEmojiPicker, arrowEdge: .bottom) {
+                        EmojiPickerView { emoji in
+                            model.insertEmoji(emoji)
+                            showingEmojiPicker = false
+                        }
+                    }
+                    .help("选择表情")
+
+                    Button {
+                        model.chooseAndSendImage()
+                    } label: {
+                        Image(systemName: "photo.on.rectangle.angled")
+                    }
+                    .help("发送图片")
+                    .disabled(model.selectedConversationID == nil)
+
+                    Image(systemName: "paperclip")
+                        .help("文件功能暂未开放")
+                        .foregroundStyle(.tertiary)
+
+                    Spacer()
+
+                    Text("⌘↩ 发送")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+
+                    Button {
+                        model.sendDraft()
+                    } label: {
+                        Text("发送")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(canSend ? .white : .secondary)
+                            .padding(.horizontal, 18)
+                            .frame(height: 32)
+                            .background(
+                                canSend ? FeiQUI.accent : Color.primary.opacity(0.08),
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.return, modifiers: [.command])
+                    .disabled(!canSend)
+                    .accessibilityLabel("发送")
+                }
+                .font(.system(size: 19, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
             }
-            Label("图片直接显示在聊天中 · 支持常见图片格式（发送时转为 JPEG，最长边 4096 像素）", systemImage: "info.circle")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            .background(FeiQUI.composerBackground, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .stroke(FeiQUI.separator, lineWidth: 1)
+            }
+            .shadow(color: Color.black.opacity(0.06), radius: 8, y: 2)
         }
-        .padding(.horizontal, 26)
-        .padding(.top, 13)
-        .padding(.bottom, 16)
-        .background(.regularMaterial)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(FeiQUI.separator)
-                .frame(height: 1)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .background(FeiQUI.chatBackground)
+    }
+
+    private var canSend: Bool {
+        !model.isPreparingPastedImage
+            && (!model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !model.draftAttachments.isEmpty)
+    }
+}
+
+private struct DraftAttachmentStrip: View {
+    let attachments: [ChatAttachment]
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(attachments) { attachment in
+                    ZStack(alignment: .topTrailing) {
+                        ImageAttachmentView(attachment: attachment)
+                            .frame(width: 88, height: 68)
+                            .clipped()
+
+                        Button {
+                            onRemove(attachment.id)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 20, height: 20)
+                                .background(.black.opacity(0.65), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(4)
+                        .help("移除这张图片")
+                    }
+                }
+            }
+            .padding(.vertical, 2)
         }
-        .shadow(color: Color.black.opacity(0.07), radius: 10, y: -4)
+        .frame(height: 76)
     }
 }
 

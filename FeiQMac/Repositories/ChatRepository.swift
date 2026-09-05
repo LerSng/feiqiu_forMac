@@ -8,6 +8,7 @@ protocol ChatRepository: AnyObject {
     func stop()
     func updateIdentity(_ identity: FeiQIdentity)
     func announce()
+    func updateTyping(isTyping: Bool, for peer: FeiQPeer)
     func sendMessage(
         _ message: ChatMessage,
         to peer: FeiQPeer,
@@ -23,6 +24,11 @@ protocol ChatRepository: AnyObject {
         to peer: FeiQPeer,
         unreadCount: Int,
         completion: @escaping (Result<ChatMessage, Error>) -> Void
+    )
+    func preparePastedImage(
+        data: Data,
+        suggestedFileName: String?,
+        completion: @escaping (Result<ChatAttachment, Error>) -> Void
     )
     func sendGroupImage(
         from fileURL: URL,
@@ -182,17 +188,32 @@ final class DefaultChatRepository: ChatRepository {
         announce()
     }
 
+    func updateTyping(isTyping: Bool, for peer: FeiQPeer) {
+        let address = peer.ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else { return }
+        networkService.sendTyping(isTyping: isTyping, to: address)
+    }
+
     func sendMessage(
         _ message: ChatMessage,
         to peer: FeiQPeer,
         unreadCount: Int
     ) {
         persistMessage(message, for: peer, unreadCount: unreadCount)
-        networkService.sendText(
-            FeiQMessageFormatter.wireText(message.text),
-            to: peer.ipAddress,
-            recipientName: peer.displayName
-        )
+        if message.attachments.isEmpty {
+            networkService.sendText(
+                FeiQMessageFormatter.wireText(message.text),
+                to: peer.ipAddress,
+                recipientName: peer.displayName
+            )
+        } else {
+            networkService.sendFileMessage(
+                FeiQMessageFormatter.wireText(message.text),
+                attachments: message.attachments,
+                to: peer.ipAddress,
+                recipientName: peer.displayName
+            )
+        }
     }
 
     func sendGroupMessage(
@@ -220,11 +241,20 @@ final class DefaultChatRepository: ChatRepository {
             guard !address.isEmpty, sentAddresses.insert(address).inserted else {
                 continue
             }
-            networkService.sendText(
-                wireText,
-                to: address,
-                recipientName: group.displayName
-            )
+            if message.attachments.isEmpty {
+                networkService.sendText(
+                    wireText,
+                    to: address,
+                    recipientName: group.displayName
+                )
+            } else {
+                networkService.sendFileMessage(
+                    wireText,
+                    attachments: message.attachments,
+                    to: address,
+                    recipientName: group.displayName
+                )
+            }
             sentCount += 1
         }
 
@@ -260,6 +290,23 @@ final class DefaultChatRepository: ChatRepository {
                     recipientName: peer.displayName
                 )
                 completion(.success(message))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func preparePastedImage(
+        data: Data,
+        suggestedFileName: String?,
+        completion: @escaping (Result<ChatAttachment, Error>) -> Void
+    ) {
+        attachmentQueue.async { [self] in
+            do {
+                completion(.success(try attachmentStorageService.prepareOutgoingImage(
+                    from: data,
+                    suggestedFileName: suggestedFileName
+                )))
             } catch {
                 completion(.failure(error))
             }
@@ -474,6 +521,14 @@ final class DefaultChatRepository: ChatRepository {
         }
 
         switch packet.commandType {
+        case .inputting, .inputEnd:
+            let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
+            emit(.peerUpdated(peer))
+            emit(.peerTyping(
+                peer: peer,
+                isTyping: packet.commandType == .inputting
+            ))
+
         case .broadcastEntry:
             let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
             emit(.peerUpdated(peer))

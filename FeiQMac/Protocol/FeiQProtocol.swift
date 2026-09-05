@@ -20,6 +20,9 @@ enum FeiQCommand: UInt32, Sendable {
     case getFileData = 0x00000060
     case releaseFiles = 0x00000061
     case getDirectoryFiles = 0x00000062
+    /// FeiQ private typing notification commands used by FeiQ 2013.
+    case inputting = 0x00000079
+    case inputEnd = 0x0000007A
     case inlineImage = 0x000000C0
     case inlineImageAcknowledgement = 0x000000C1
 
@@ -47,6 +50,8 @@ enum FeiQCommand: UInt32, Sendable {
         case getFileData.rawValue: return .getFileData
         case releaseFiles.rawValue: return .releaseFiles
         case getDirectoryFiles.rawValue: return .getDirectoryFiles
+        case inputting.rawValue: return .inputting
+        case inputEnd.rawValue: return .inputEnd
         case inlineImage.rawValue: return .inlineImage
         case inlineImageAcknowledgement.rawValue: return .inlineImageAcknowledgement
         default: return nil
@@ -55,32 +60,45 @@ enum FeiQCommand: UInt32, Sendable {
 }
 
 enum FeiQMessageFormatter {
+    struct CompatibleEmoticon: Hashable, Sendable {
+        let code: String
+        let emoji: String
+    }
+
     private static let fontDirectiveRegex = try? NSRegularExpression(
         pattern: #"\{[/\\]?font;[^{}]*\}"#,
         options: [.caseInsensitive]
     )
 
-    // FeiQ 2013 does not use Unicode emoji for the expressions in its
-    // message editor. It writes these names as plain ASCII tokens and the
-    // Windows client replaces them with its bundled emoticon images.
-    // Keep this list limited to codes confirmed from FeiQ packets so that
-    // ordinary Unicode emoji are not converted to an incorrect wire value.
-    private static let feiQEmojiByCode: [String: String] = [
-        "/:fd": "😶",
-        "/:cajole": "🥺",
-        "/:o": "😮"
+    // FeiQ 2013 writes built-in expressions as ASCII text codes. The first
+    // code (/:)) and the named codes below are confirmed by feiqiu-README.md.
+    // macOS renders their closest native emoji, while the original code is
+    // sent back to Windows so FeiQ can render its bundled GIF.
+    private static let compatibleEmoticons: [CompatibleEmoticon] = [
+        CompatibleEmoticon(code: "/:)", emoji: "🙂"),
+        CompatibleEmoticon(code: "/<rotate>", emoji: "🔄"),
+        CompatibleEmoticon(code: "/:baoquan", emoji: "✊"),
+        CompatibleEmoticon(code: "/:love", emoji: "❤️"),
+
+        // Keep the codes from older builds for backward compatibility with
+        // messages already stored by previous versions of FeiQ Mac.
+        CompatibleEmoticon(code: "/:fd", emoji: "😶"),
+        CompatibleEmoticon(code: "/:cajole", emoji: "🥺"),
+        CompatibleEmoticon(code: "/:o", emoji: "😮")
     ]
 
-    private static let feiQCodeByEmoji: [String: String] = [
-        "😶": "/:fd",
-        "🥺": "/:cajole",
-        "😮": "/:o"
-    ]
+    private static let feiQEmojiByCode: [String: String] = Dictionary(
+        uniqueKeysWithValues: compatibleEmoticons.map { ($0.code, $0.emoji) }
+    )
 
-    /// Expressions that are known to render as bundled FeiQ emoticons in
-    /// FeiQ 2013 for Windows. The picker uses this list to make compatibility
-    /// visible to the user.
-    static let feiQCompatibleEmojis = ["😶", "🥺", "😮"]
+    private static let feiQCodeByEmoji: [String: String] = Dictionary(
+        uniqueKeysWithValues: compatibleEmoticons.map { ($0.emoji, $0.code) }
+    )
+
+    /// Expressions that FeiQ Windows can render natively. The picker uses
+    /// this list instead of presenting Unicode-only expressions as if they
+    /// were FeiQ-compatible.
+    static let feiQCompatibleEmojis = compatibleEmoticons.map(\.emoji)
 
     /// Removes FeiQ inline font metadata while preserving the actual text
     /// and line breaks. For example, a suffix such as
@@ -101,8 +119,9 @@ enum FeiQMessageFormatter {
 
         // The Windows client may append a font directive after every
         // emoticon, so remove formatting first and decode the remaining
-        // FeiQ tokens afterwards.
-        for (code, emoji) in feiQEmojiByCode {
+        // FeiQ tokens afterwards. Longest codes are replaced first so a
+        // future named code cannot be partially consumed by an alias.
+        for (code, emoji) in feiQEmojiByCode.sorted(by: { $0.key.count > $1.key.count }) {
             result = result.replacingOccurrences(of: code, with: emoji)
         }
 
@@ -116,7 +135,7 @@ enum FeiQMessageFormatter {
         guard !text.isEmpty else { return "" }
 
         var result = text
-        for (emoji, code) in feiQCodeByEmoji {
+        for (emoji, code) in feiQCodeByEmoji.sorted(by: { $0.key.count > $1.key.count }) {
             result = result.replacingOccurrences(of: emoji, with: code)
         }
         return result
@@ -383,15 +402,15 @@ struct FeiQPacket: Sendable {
         return feiQVersionFields[2]
     }
 
-    /// A few FeiQ 2013 builds use a private presence command (0x79 / 121)
-    /// instead of the regular IPMSG entry command. The version marker and an
-    /// empty payload make this distinguishable from a text message.
+    /// A few FeiQ 2013 builds use private presence commands instead of the
+    /// regular IPMSG entry command. Typing notifications (0x79/0x7A) are
+    /// deliberately excluded here: 0x79 is an input-state packet, not an
+    /// online-presence packet.
     var isFeiQPresencePacket: Bool {
         switch baseCommand {
         case FeiQCommand.broadcastEntry.rawValue,
              FeiQCommand.answerEntry.rawValue,
-             0x00000009,
-             0x00000079:
+             0x00000009:
             // Standard entry/answer packets are only classified here when
             // they carry FeiQ's extended version. The private 9/121 commands
             // are accepted even when a FeiQ build sends a plain "1" header.
@@ -403,8 +422,8 @@ struct FeiQPacket: Sendable {
 
     var isFeiQEntryRequest: Bool {
         switch baseCommand {
-        case FeiQCommand.broadcastEntry.rawValue, 0x00000009, 0x00000079:
-            return isFeiQFormat || baseCommand == 0x00000009 || baseCommand == 0x00000079
+        case FeiQCommand.broadcastEntry.rawValue, 0x00000009:
+            return isFeiQFormat || baseCommand == 0x00000009
         default:
             return false
         }

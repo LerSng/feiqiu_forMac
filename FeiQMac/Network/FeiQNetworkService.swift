@@ -46,6 +46,7 @@ protocol FeiQNetworkServiceProtocol: AnyObject {
     func updateIdentity(name: String, host: String, group: String)
     func announce()
     func replyToEntry(from ipAddress: String)
+    func sendTyping(isTyping: Bool, to ipAddress: String)
     func sendText(_ text: String, to ipAddress: String, recipientName: String?)
     func sendFileMessage(
         _ text: String,
@@ -144,6 +145,27 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
     func replyToEntry(from ipAddress: String) {
         queue.async { [weak self] in
             self?.sendAnswerEntryInternal(to: ipAddress)
+        }
+    }
+
+    func sendTyping(isTyping: Bool, to ipAddress: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let command: FeiQCommand = isTyping ? .inputting : .inputEnd
+            let packet = FeiQPacket(
+                versionIdentifier: self.feiQVersionIdentifier,
+                packetNumber: self.nextPacketNumber(),
+                senderName: self.localName,
+                senderHost: self.localHost,
+                command: command.rawValue,
+                // FeiQ expects the control packet payload to be empty or a
+                // single NUL. FeiQPacket.encoded() adds the terminator too,
+                // so this produces the compatible single-NUL payload.
+                additionalData: Data([0])
+            )
+            guard self.sendUDP(packet.encoded(), to: ipAddress) else { return }
+            let stateDescription = isTyping ? "正在输入" : "停止输入"
+            self.emitLog("UDP → \(ipAddress)：已发送\(stateDescription)状态")
         }
     }
 

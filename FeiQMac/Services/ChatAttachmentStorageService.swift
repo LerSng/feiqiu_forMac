@@ -13,6 +13,7 @@ protocol ChatAttachmentStorageService: AnyObject {
     var locationDescription: String { get }
 
     func prepareOutgoingImage(from sourceURL: URL) throws -> ChatAttachment
+    func prepareOutgoingImage(from data: Data, suggestedFileName: String?) throws -> ChatAttachment
     func prepareIncomingImage(for descriptor: FeiQFileAttachment) throws -> ChatAttachment
     func saveInlineImage(_ data: Data, imageID: String, isBitmap: Bool) throws -> ChatAttachment
 }
@@ -102,10 +103,34 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
             throw ChatAttachmentStorageError.invalidFileSize
         }
 
+        return try makeOutgoingImage(
+            data: Data(contentsOf: sourceURL),
+            suggestedFileName: sourceURL.deletingPathExtension().lastPathComponent,
+            modifiedAt: values.contentModificationDate ?? Date()
+        )
+    }
+
+    func prepareOutgoingImage(from data: Data, suggestedFileName: String?) throws -> ChatAttachment {
+        guard !data.isEmpty else {
+            throw ChatAttachmentStorageError.invalidFileSize
+        }
+        return try makeOutgoingImage(
+            data: data,
+            suggestedFileName: suggestedFileName ?? "clipboard-image",
+            modifiedAt: Date()
+        )
+    }
+
+    private func makeOutgoingImage(
+        data: Data,
+        suggestedFileName: String,
+        modifiedAt: Date
+    ) throws -> ChatAttachment {
         // FeiQ 2013's format flag 2 denotes JPEG. Convert HEIC/PNG/etc.
         // using ImageIO before advertising that format on the wire.
-        let jpeg = try Self.jpegData(from: Data(contentsOf: sourceURL))
-        let fileName = Self.safeFileName(sourceURL.deletingPathExtension().lastPathComponent) + ".jpg"
+        let jpeg = try Self.jpegData(from: data)
+        let baseName = Self.safeFileName(URL(fileURLWithPath: suggestedFileName).deletingPathExtension().lastPathComponent)
+        let fileName = (baseName.isEmpty ? "clipboard-image" : baseName) + ".jpg"
         let destinationURL = imagesDirectoryURL.appendingPathComponent(
             "\(UUID().uuidString)_\(fileName)",
             isDirectory: false
@@ -121,9 +146,7 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
             fileID: String(UInt32.random(in: 1...UInt32.max)),
             fileName: fileName,
             fileSize: Int64(jpeg.count),
-            modifiedAt: Int64(
-                (values.contentModificationDate ?? Date()).timeIntervalSince1970
-            ),
+            modifiedAt: Int64(modifiedAt.timeIntervalSince1970),
             fileAttributes: Self.regularFileAttribute
         )
 
@@ -173,12 +196,18 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
 
     private static func jpegData(from data: Data) throws -> Data {
         guard data.count <= FeiQInlineImageCodec.maximumBytes,
-              let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: 4096
-              ] as CFDictionary) else { throw ChatAttachmentStorageError.unsupportedImage }
+              let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            throw ChatAttachmentStorageError.unsupportedImage
+        }
+        let thumbnailOptions: CFDictionary = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 4096
+        ] as CFDictionary
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions)
+                ?? CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw ChatAttachmentStorageError.unsupportedImage
+        }
         let result = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(result, UTType.jpeg.identifier as CFString, 1, nil) else {
             throw ChatAttachmentStorageError.unsupportedImage
@@ -187,7 +216,7 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
         guard CGImageDestinationFinalize(destination), result.length <= FeiQInlineImageCodec.maximumBytes else {
             throw ChatAttachmentStorageError.invalidFileSize
         }
-        return result as Data
+        return Data(result)
     }
 
     /// FeiQ bitmap flag 1 carries a DIB without BITMAPFILEHEADER.

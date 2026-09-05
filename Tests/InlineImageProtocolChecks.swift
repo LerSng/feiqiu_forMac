@@ -46,6 +46,17 @@ enum InlineImageProtocolChecks {
         check(String(data: ack.encoded(), encoding: .utf8) == "1:124:Mac:Mac:193:e8fdb8e6|2#\0", "exact ACK command / body")
         check(FeiQInlineImageCodec.acknowledgement(FeiQPacket.parse(ack.encoded())!.additionalText)?.index == 2, "parse ACK")
 
+        check(FeiQMessageFormatter.displayText("/:)") == "🙂", "decode FeiQ smile emoticon")
+        check(FeiQMessageFormatter.displayText("你好 /:love") == "你好 ❤️", "decode named FeiQ emoticon")
+        check(FeiQMessageFormatter.wireText("🙂") == "/:)", "encode FeiQ smile emoticon")
+        check(FeiQMessageFormatter.wireText("❤️") == "/:love", "encode named FeiQ emoticon")
+
+        let typing = FeiQPacket.parse(Data("1_lbt6_0#128#DEVICE#0#0#0#4001#9:126:Win:PC:121:\0".utf8))!
+        let typingEnded = FeiQPacket.parse(Data("1_lbt6_0#128#DEVICE#0#0#0#4001#9:127:Win:PC:122:\0".utf8))!
+        check(typing.commandType == .inputting, "parse FeiQ inputting command")
+        check(typingEnded.commandType == .inputEnd, "parse FeiQ input-end command")
+        check(!typing.isFeiQPresencePacket, "typing packet is not presence")
+
         let bytes = Data((0..<1030).map { UInt8(truncatingIfNeeded: $0) })
         let sent = FeiQInlineImageCodec.decode(FeiQInlineImageCodec.encode(imageID: "1234abcd", data: bytes, index: 3))!
         check(sent.offset == 1024 && sent.index == 3 && sent.data == bytes.suffix(6), "last outbound slice")
@@ -83,7 +94,7 @@ enum InlineImageProtocolChecks {
         let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil)!
         check(decoded.width == 1 && decoded.height == 1, "DIB dimensions")
         let imported: ChatAttachment
-        do { imported = try storage.prepareOutgoingImage(from: bitmap.localURL) }
+        do { imported = try storage.prepareOutgoingImage(from: jpeg, suggestedFileName: "clipboard.png") }
         catch { print("JPEG import failed: \(error)"); return }
         check(imported.mimeType == "image/jpeg" && imported.isAvailable, "outgoing image persists")
         let incoming = try storage.saveInlineImage(jpeg, imageID: "c5df6ae0", isBitmap: false)

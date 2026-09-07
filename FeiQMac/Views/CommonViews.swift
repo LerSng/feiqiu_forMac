@@ -149,24 +149,35 @@ extension View {
 /// 工具按钮只在悬停或按下时显示底色，避免常驻的小方框堆叠。
 struct FeiQIconButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+    let size: CGFloat
+
+    init(size: CGFloat = 32) {
+        self.size = size
+    }
 
     func makeBody(configuration: Configuration) -> some View {
-        IconBody(label: configuration.label, isPressed: configuration.isPressed, isEnabled: isEnabled)
+        IconBody(
+            label: configuration.label,
+            isPressed: configuration.isPressed,
+            isEnabled: isEnabled,
+            size: size
+        )
     }
 
     private struct IconBody: View {
         let label: ButtonStyleConfiguration.Label
         let isPressed: Bool
         let isEnabled: Bool
+        let size: CGFloat
         @State private var isHovering = false
 
         var body: some View {
             label
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: max(13, size * 0.5), weight: .medium))
                 .foregroundStyle(isEnabled ? Color.secondary : Color.secondary.opacity(0.4))
-                .frame(width: 32, height: 32)
+                .frame(width: size, height: size)
                 .background(isEnabled && (isHovering || isPressed) ? FeiQUI.subtleFill : .clear,
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            in: RoundedRectangle(cornerRadius: min(8, size * 0.25), style: .continuous))
                 .contentShape(Rectangle())
                 .onHover { isHovering = $0 }
         }

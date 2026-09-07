@@ -35,17 +35,19 @@ struct ContentView: View {
                 Button {
                     model.refreshDiscovery()
                 } label: {
-                    Label("刷新用户", systemImage: "arrow.clockwise")
+                    Image(systemName: "arrow.clockwise")
                 }
                 .help("发送一次局域网发现广播")
+                .accessibilityLabel("刷新用户")
 
                 Menu {
                     Button("设置", systemImage: "gearshape") { model.showingSettings = true }
                     Button("网络日志", systemImage: "waveform.path.ecg") { model.showingLogs = true }
                 } label: {
-                    Label("应用选项", systemImage: "ellipsis.circle")
+                    Image(systemName: "ellipsis.circle")
                 }
                 .help("设置与网络日志")
+                .accessibilityLabel("应用选项")
             }
         }
         .sheet(isPresented: $model.showingSettings) {

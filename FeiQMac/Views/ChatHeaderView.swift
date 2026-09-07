@@ -13,14 +13,22 @@ struct ConversationToolbarView: View {
     @State private var showingReceivedFiles = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            identityView
-            Spacer(minLength: 16)
-            actionView
+        GeometryReader { proxy in
+            let isCompact = proxy.size.width < 390
+
+            HStack(spacing: isCompact ? 5 : 10) {
+                identityView(isCompact: isCompact)
+                    .layoutPriority(1)
+                Spacer(minLength: isCompact ? 4 : 10)
+                actionView(isCompact: isCompact)
+            }
+            .padding(.horizontal, isCompact ? 7 : 10)
+            .padding(.vertical, isCompact ? 1 : 2)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .offset(y: 1)
         }
-        .padding(.horizontal, 10)
-        .frame(minWidth: 340, idealWidth: 540, maxWidth: 780)
-        .frame(height: 40)
+        .frame(minWidth: 178, idealWidth: 430, maxWidth: 700)
+        .frame(height: 36)
         .animation(.easeInOut(duration: 0.2), value: model.selectedConversationID)
         .onChange(of: model.selectedConversationID) { _, _ in
             showingProfile = false
@@ -29,13 +37,18 @@ struct ConversationToolbarView: View {
     }
 
     @ViewBuilder
-    private var identityView: some View {
+    private func identityView(isCompact: Bool) -> some View {
         if let peer = model.selectedPeer {
-            HStack(spacing: 9) {
-                ContactAvatar(name: peer.displayName, isOnline: peer.isOnline, size: 32, showsStatus: false)
-                VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: isCompact ? 6 : 9) {
+                ContactAvatar(
+                    name: peer.displayName,
+                    isOnline: peer.isOnline,
+                    size: isCompact ? 23 : 28,
+                    showsStatus: false
+                )
+                VStack(alignment: .leading, spacing: 0) {
                     Text(peer.displayName)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: isCompact ? 12 : 14, weight: .semibold))
                         .lineLimit(1)
                     HStack(spacing: 5) {
                         FeiQStatusDot(
@@ -45,34 +58,44 @@ struct ConversationToolbarView: View {
                             size: 5
                         )
                         Text(model.isPeerTyping(peer.id) ? "对方正在输入…" : (peer.isOnline ? "在线" : "离线"))
-                        if !peer.ipAddress.isEmpty {
+                        if !isCompact && !peer.ipAddress.isEmpty {
                             Text("·")
                             Text(peer.ipAddress)
                         }
                     }
-                    .font(.system(size: 11))
+                    .font(.system(size: isCompact ? 10 : 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(height: isCompact ? 12 : 13, alignment: .top)
+                    .offset(y: -1)
                 }
             }
         } else if let group = model.selectedGroup {
-            HStack(spacing: 9) {
-                GroupAvatar(size: 32)
-                VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: isCompact ? 6 : 9) {
+                GroupAvatar(size: isCompact ? 23 : 28)
+                VStack(alignment: .leading, spacing: 0) {
                     Text(group.displayName)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: isCompact ? 12 : 14, weight: .semibold))
                         .lineLimit(1)
-                    Text("\(group.memberCount) 位成员 · \(model.members(for: group.id).filter(\.isOnline).count) 人在线")
-                        .font(.system(size: 11))
+                    Text(
+                        isCompact
+                            ? "\(group.memberCount) 位成员"
+                            : "\(group.memberCount) 位成员 · \(model.members(for: group.id).filter(\.isOnline).count) 人在线"
+                    )
+                        .font(.system(size: isCompact ? 10 : 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(height: isCompact ? 12 : 13, alignment: .top)
+                        .offset(y: -1)
                 }
             }
         }
     }
 
     @ViewBuilder
-    private var actionView: some View {
+    private func actionView(isCompact: Bool) -> some View {
         if let peer = model.selectedPeer {
             HStack(spacing: 2) {
                 Button {
@@ -81,7 +104,7 @@ struct ConversationToolbarView: View {
                 } label: {
                     Image(systemName: "person.crop.circle")
                 }
-                .buttonStyle(FeiQIconButtonStyle())
+                .buttonStyle(FeiQIconButtonStyle(size: isCompact ? 27 : 32))
                 .help("联系人资料")
                 .accessibilityLabel("联系人资料")
                 .popover(isPresented: $showingProfile, arrowEdge: .top) {
@@ -96,7 +119,7 @@ struct ConversationToolbarView: View {
                 } label: {
                     Image(systemName: "arrow.down.document")
                 }
-                .buttonStyle(FeiQIconButtonStyle())
+                .buttonStyle(FeiQIconButtonStyle(size: isCompact ? 27 : 32))
                 .help("接收文件")
                 .accessibilityLabel("接收文件")
                 .popover(isPresented: $showingReceivedFiles, arrowEdge: .top) {
@@ -111,7 +134,7 @@ struct ConversationToolbarView: View {
             } label: {
                 Image(systemName: "person.2.badge.gearshape")
             }
-            .buttonStyle(FeiQIconButtonStyle())
+            .buttonStyle(FeiQIconButtonStyle(size: isCompact ? 27 : 32))
             .help("群聊资料与成员")
             .accessibilityLabel("群聊资料与成员")
         }

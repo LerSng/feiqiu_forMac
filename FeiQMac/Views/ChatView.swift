@@ -2,7 +2,7 @@
 //  ChatView.swift
 //  FeiQMac
 //
-//  负责单聊与群聊详情页，包括聊天头部、消息列表、消息气泡、输入区和空状态。
+//  负责单聊与群聊详情页，包括消息列表、消息气泡、输入区和空状态。
 //
 
 import SwiftUI
@@ -10,56 +10,21 @@ import AppKit
 
 struct ChatDetailView: View {
     @EnvironmentObject private var model: ChatViewModel
-    @AppStorage("chat.detailsCollapsed") private var isPeerSidebarCollapsed = true
 
     var body: some View {
         Group {
             if let group = model.selectedGroup {
-                VStack(spacing: 0) {
-                    GroupChatHeader(group: group)
-                    MessageList(
-                        conversationID: group.id,
-                        conversationTitle: group.displayName,
-                        peer: nil
-                    )
-                    .id(group.id)
-                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                    .layoutPriority(1)
-                    Divider()
-                    MessageComposer()
-                }
+                conversationView(
+                    conversationID: group.id,
+                    conversationTitle: group.displayName,
+                    peer: nil
+                )
             } else if let peer = model.selectedPeer {
-                VStack(spacing: 0) {
-                    ChatHeader(peer: peer, isShowingDetails: !isPeerSidebarCollapsed) {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isPeerSidebarCollapsed.toggle()
-                        }
-                    }
-                    HStack(spacing: 0) {
-                        MessageList(
-                            conversationID: peer.id,
-                            conversationTitle: peer.displayName,
-                            peer: peer
-                        )
-                        .id(peer.id)
-                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                        .layoutPriority(1)
-
-                        if !isPeerSidebarCollapsed {
-                            Divider().opacity(0.5)
-                                PeerContextSidebar(peer: peer) {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        isPeerSidebarCollapsed = true
-                                    }
-                                }
-                                .frame(width: 238)
-                                .clipped()
-                        }
-                    }
-                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                    Divider()
-                    MessageComposer()
-                }
+                conversationView(
+                    conversationID: peer.id,
+                    conversationTitle: peer.displayName,
+                    peer: peer
+                )
             } else {
                 EmptyChatView()
             }
@@ -92,226 +57,29 @@ struct ChatDetailView: View {
             Text(model.messageDeletionError ?? "")
         }
     }
-}
 
-
-private struct PeerContextSidebar: View {
-    let peer: FeiQPeer
-    let onCollapse: () -> Void
-
-    var body: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 8) {
-                Text("联系人资料")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Button(action: onCollapse) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .bold))
-                        .frame(width: 26, height: 26)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("收起右侧栏")
-            }
-
-            PeerProfileCard(peer: peer)
-
-            Spacer(minLength: 4)
-
-            ReceivedFilesPanel(conversationID: peer.id)
-                .frame(maxHeight: 260)
-        }
-        .padding(12)
-        .frame(width: 238)
-        .frame(maxHeight: .infinity)
-        .background(FeiQUI.listBackground)
-    }
-}
-
-private struct CollapsedPeerSidebar: View {
-    let onExpand: () -> Void
-
-    var body: some View {
+    @ViewBuilder
+    private func conversationView(
+        conversationID: String,
+        conversationTitle: String,
+        peer: FeiQPeer?
+    ) -> some View {
         VStack(spacing: 0) {
-            Button(action: onExpand) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 12, weight: .bold))
-                    .frame(width: 28, height: 30)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("展开右侧栏")
-
-            Spacer()
-        }
-        .padding(.top, 12)
-        .frame(width: 40)
-        .frame(maxHeight: .infinity)
-        .background(FeiQUI.listBackground)
-    }
-}
-
-private struct PeerProfileCard: View {
-    let peer: FeiQPeer
-
-    private static let lastSeenFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "MM月dd日 HH:mm"
-        return formatter
-    }()
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                ContactAvatar(name: peer.displayName, isOnline: peer.isOnline, size: 48)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(peer.displayName)
-                        .font(.headline.weight(.semibold))
-                        .lineLimit(1)
-                    HStack(spacing: 5) {
-                        FeiQStatusDot(color: peer.isOnline ? .green : .secondary, size: 6)
-                        Text(peer.isOnline ? "在线" : "最近离线")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            }
+            MessageList(
+                conversationID: conversationID,
+                conversationTitle: conversationTitle,
+                peer: peer
+            )
+            .id(conversationID)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            .layoutPriority(1)
 
             Divider()
-
-            PeerProfileValue(title: "主机名", value: peer.hostName)
-            PeerProfileValue(title: "IP 地址", value: peer.ipAddress)
-            if !peer.group.isEmpty {
-                PeerProfileValue(title: "分组", value: peer.group)
-            }
-            PeerProfileValue(
-                title: "最后发现",
-                value: Self.lastSeenFormatter.string(from: peer.lastSeen)
-            )
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .feiQSurface(fill: FeiQUI.cardBackground, cornerRadius: 13, shadow: true)
-    }
-}
-
-private struct PeerProfileValue: View {
-    let title: String
-    let value: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(title)
-                .foregroundStyle(.tertiary)
-                .frame(width: 48, alignment: .leading)
-            Text(value.isEmpty ? "未提供" : value)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-        }
-        .font(.caption)
-    }
-}
-
-private struct ReceivedFilesPanel: View {
-    @EnvironmentObject private var model: ChatViewModel
-    let conversationID: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.down.document")
-                    .foregroundStyle(FeiQUI.accent)
-                Text("接收文件")
-                    .font(.subheadline.weight(.semibold))
-                Text("\(model.receivedFiles(for: conversationID).count)")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                Spacer()
-            }
-
-            if model.receivedFiles(for: conversationID).isEmpty {
-                VStack(spacing: 7) {
-                    Image(systemName: "tray")
-                        .font(.system(size: 22))
-                        .foregroundStyle(.tertiary)
-                    Text("暂未收到文件")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 100)
-            } else {
-                ScrollView(showsIndicators: false) {
-                    LazyVStack(spacing: 4) {
-                        ForEach(model.receivedFiles(for: conversationID)) { file in
-                            ReceivedFileRow(file: file)
-                        }
-                    }
-                }
-                .hiddenScrollIndicators()
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .feiQSurface(fill: FeiQUI.cardBackground, cornerRadius: 13, shadow: true)
-    }
-}
-
-private struct ReceivedFileRow: View {
-    let file: ChatReceivedFile
-    @State private var showingPreview = false
-
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "MM-dd HH:mm"
-        return formatter
-    }()
-
-    var body: some View {
-        Button {
-            if file.attachment.isAvailable {
-                showingPreview = true
-            } else {
-                NSWorkspace.shared.activateFileViewerSelecting([file.attachment.localURL])
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: file.attachment.systemImageName)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(FeiQUI.accent)
-                    .frame(width: 28, height: 28)
-                    .background(FeiQUI.accentSoft, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(file.attachment.fileName)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text("\(file.attachment.fileSizeDescription) · \(Self.dateFormatter.string(from: file.receivedAt))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 5)
-        }
-        .buttonStyle(.plain)
-        .help(file.attachment.isAvailable ? "预览 \(file.attachment.fileName)" : "在 Finder 中显示文件")
-        .sheet(isPresented: $showingPreview) {
-            if file.attachment.kind == .file {
-                FilePreviewView(attachment: file.attachment)
-            } else {
-                ImagePreviewView(attachment: file.attachment)
-            }
+            MessageComposer()
         }
     }
 }
+
 
 private struct MessageList: View {
     @EnvironmentObject private var model: ChatViewModel
@@ -973,6 +741,21 @@ private struct MessageComposer: View {
                     }
                     .help("添加文件")
                     .disabled(model.selectedConversationID == nil || model.isPreparingAttachment)
+
+                    if model.selectedPeer != nil {
+                        Divider()
+                            .frame(height: 18)
+                            .opacity(0.65)
+
+                        Button {
+                            model.sendShake()
+                        } label: {
+                            Image(systemName: "iphone.radiowaves.left.and.right")
+                        }
+                        .help(model.shakeCoolingDown ? "请稍等再发送抖一抖" : "抖一抖")
+                        .accessibilityLabel("抖一抖")
+                        .disabled(!model.canSendShake)
+                    }
 
                     if model.isPreparingAttachment {
                         ProgressView()

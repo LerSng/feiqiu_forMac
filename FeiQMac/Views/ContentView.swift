@@ -16,14 +16,21 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 260, ideal: 290, max: 360)
         } detail: {
             ChatDetailView()
-                .navigationTitle(detailTitle)
-                .animation(.easeInOut(duration: 0.2), value: detailTitle)
+                .navigationTitle("")
         }
         .navigationSplitViewStyle(.balanced)
         .tint(FeiQUI.accent)
         .background(FeiQUI.windowBackground)
         .background(WindowShakeView(eventID: model.windowShakeID))
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                if model.selectedConversationID != nil {
+                    ConversationToolbarView()
+                        .id(model.selectedConversationID)
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                }
+            }
+
             ToolbarItemGroup {
                 Button {
                     model.refreshDiscovery()
@@ -59,13 +66,4 @@ struct ContentView: View {
         }
     }
 
-    private var detailTitle: String {
-        if let group = model.selectedGroup {
-            return group.displayName
-        }
-        if let peer = model.selectedPeer {
-            return peer.displayName
-        }
-        return ""
-    }
 }

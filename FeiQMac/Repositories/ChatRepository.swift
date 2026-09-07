@@ -116,24 +116,23 @@ protocol ChatRepository: AnyObject {
 }
 
 final class DefaultChatRepository: ChatRepository {
-    private let networkService: FeiQNetworkServiceProtocol
-    private let historyService: ChatHistoryService
-    private let attachmentStorageService: ChatAttachmentStorageService
+    private let eventSource: FeiQNetworkEventSource
+    private let discoveryService: DiscoveryService
+    private let messageTransportService: MessageTransportService
+    private let fileTransferService: FileTransferService
+    private let inlineImageService: InlineImageService
+    private let groupProtocolService: GroupProtocolService
+    private let messageRepository: MessageRepository
+    private let attachmentRepository: AttachmentRepository
+    private let groupRepository: GroupRepository
+    private let sessionRepository: SessionRepository
+    private let notificationRepository: NotificationRepository
     private let screenshotService: ScreenshotCaptureService
-    private let notificationService: NotificationService
-    private let stateQueue = DispatchQueue(label: "com.feiqmac.chat-repository-state")
     private let attachmentQueue = DispatchQueue(
         label: "com.feiqmac.chat-repository-attachments",
         qos: .utility
     )
 
-    private var identity = FeiQIdentity(
-        nickname: "飞秋 Mac",
-        hostName: "Mac",
-        groupName: ""
-    )
-    private var peersByID: [String: FeiQPeer] = [:]
-    private var groupsByID: [String: ChatGroup] = [:]
     // Accessed only on attachmentQueue, like other received packet state.
     private var lastReceivedShakes: [String: Date] = [:]
     // FeiQ retries the private 0xB0 request when no response is observed.
@@ -160,10 +159,10 @@ final class DefaultChatRepository: ChatRepository {
     var onEvent: ((ChatRepositoryEvent) -> Void)?
 
     var historyLocationDescription: String {
-        historyService.locationDescription
+        messageRepository.locationDescription
     }
 
-    init(
+    convenience init(
         networkService: FeiQNetworkServiceProtocol,
         historyService: ChatHistoryService,
         attachmentStorageService: ChatAttachmentStorageService,
@@ -172,16 +171,57 @@ final class DefaultChatRepository: ChatRepository {
         inlineImageTimeout: TimeInterval = 90,
         inlineImageRetention: TimeInterval = 600
     ) {
+        self.init(
+            eventSource: networkService,
+            discoveryService: DefaultDiscoveryService(networkService: networkService),
+            messageTransportService: DefaultMessageTransportService(networkService: networkService),
+            fileTransferService: DefaultFileTransferService(networkService: networkService),
+            inlineImageService: DefaultInlineImageService(networkService: networkService),
+            groupProtocolService: DefaultGroupProtocolService(),
+            messageRepository: DefaultMessageRepository(historyService: historyService),
+            attachmentRepository: DefaultAttachmentRepository(storageService: attachmentStorageService),
+            groupRepository: DefaultGroupRepository(historyService: historyService),
+            sessionRepository: DefaultSessionRepository(historyService: historyService),
+            notificationRepository: DefaultNotificationRepository(notificationService: notificationService),
+            screenshotService: screenshotService,
+            inlineImageTimeout: inlineImageTimeout,
+            inlineImageRetention: inlineImageRetention
+        )
+    }
+
+    init(
+        eventSource: FeiQNetworkEventSource,
+        discoveryService: DiscoveryService,
+        messageTransportService: MessageTransportService,
+        fileTransferService: FileTransferService,
+        inlineImageService: InlineImageService,
+        groupProtocolService: GroupProtocolService,
+        messageRepository: MessageRepository,
+        attachmentRepository: AttachmentRepository,
+        groupRepository: GroupRepository,
+        sessionRepository: SessionRepository,
+        notificationRepository: NotificationRepository,
+        screenshotService: ScreenshotCaptureService = MacScreenshotCaptureService(),
+        inlineImageTimeout: TimeInterval = 90,
+        inlineImageRetention: TimeInterval = 600
+    ) {
         precondition(inlineImageTimeout > 0 && inlineImageRetention > inlineImageTimeout)
         self.inlineImageTimeout = inlineImageTimeout
         self.inlineImageRetention = inlineImageRetention
-        self.networkService = networkService
-        self.historyService = historyService
-        self.attachmentStorageService = attachmentStorageService
+        self.eventSource = eventSource
+        self.discoveryService = discoveryService
+        self.messageTransportService = messageTransportService
+        self.fileTransferService = fileTransferService
+        self.inlineImageService = inlineImageService
+        self.groupProtocolService = groupProtocolService
+        self.messageRepository = messageRepository
+        self.attachmentRepository = attachmentRepository
+        self.groupRepository = groupRepository
+        self.sessionRepository = sessionRepository
+        self.notificationRepository = notificationRepository
         self.screenshotService = screenshotService
-        self.notificationService = notificationService
 
-        networkService.onPacket = { [weak self] packet, ipAddress, transport, sourcePort in
+        eventSource.onPacket = { [weak self] packet, ipAddress, transport, sourcePort in
             self?.attachmentQueue.async { [weak self] in
                 self?.handle(
                     packet: packet,
@@ -191,11 +231,15 @@ final class DefaultChatRepository: ChatRepository {
                 )
             }
         }
-        networkService.onInlineImage = { [weak self] bytes, imageID, bitmapFlag, packet, ipAddress in
+        eventSource.onInlineImage = { [weak self] bytes, imageID, bitmapFlag, packet, ipAddress in
             self?.attachmentQueue.async { [weak self] in
                 guard let self else { return }
                 do {
-                    let attachment = try self.attachmentStorageService.saveInlineImage(bytes, imageID: imageID, isBitmap: bitmapFlag == 1)
+                    let attachment = try self.attachmentRepository.saveInlineImage(
+                        bytes,
+                        imageID: imageID,
+                        isBitmap: bitmapFlag == 1
+                    )
                     self.receivedInlineImages = self.receivedInlineImages.filter { Date().timeIntervalSince($0.value.date) < 600 }
                     if self.receivedInlineImages.count >= 256,
                        let oldest = self.receivedInlineImages.min(by: { $0.value.date < $1.value.date })?.key {
@@ -214,43 +258,33 @@ final class DefaultChatRepository: ChatRepository {
                 }
             }
         }
-        networkService.onLog = { [weak self] message in
+        eventSource.onLog = { [weak self] message in
             self?.emit(.log(message))
         }
-        networkService.onStateChange = { [weak self] running in
+        eventSource.onStateChange = { [weak self] running in
             self?.emit(.networkStateChanged(running))
         }
-        notificationService.onNotificationSelected = { [weak self] peerID in
+        notificationRepository.onNotificationSelected = { [weak self] peerID in
             self?.emit(.notificationSelected(conversationID: peerID))
         }
     }
 
     func start(identity: FeiQIdentity) {
         updateIdentity(identity)
-        networkService.start(
-            name: identity.nickname,
-            host: identity.hostName,
-            group: identity.groupName
-        )
+        discoveryService.start(identity: identity)
     }
 
     func stop() {
-        networkService.stop()
+        discoveryService.stop()
     }
 
     func updateIdentity(_ identity: FeiQIdentity) {
-        stateQueue.sync {
-            self.identity = identity
-        }
-        networkService.updateIdentity(
-            name: identity.nickname,
-            host: identity.hostName,
-            group: identity.groupName
-        )
+        sessionRepository.updateIdentity(identity)
+        discoveryService.updateIdentity(identity)
     }
 
     func announce() {
-        networkService.announce()
+        discoveryService.announce()
     }
 
     func refreshDiscovery() {
@@ -259,13 +293,46 @@ final class DefaultChatRepository: ChatRepository {
 
     func sendShake(to peer: FeiQPeer) {
         guard peer.isOnline else { return }
-        networkService.sendShake(to: peer.ipAddress)
+        messageTransportService.sendShake(to: peer.ipAddress)
     }
 
     func updateTyping(isTyping: Bool, for peer: FeiQPeer) {
         let address = peer.ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !address.isEmpty else { return }
-        networkService.sendTyping(isTyping: isTyping, to: address)
+        messageTransportService.sendTyping(isTyping: isTyping, to: address)
+    }
+
+    /// Routes outgoing content to the smallest network capability that can
+    /// represent it. The repository decides the business type; the services
+    /// only perform the corresponding transport operation.
+    private func sendContent(
+        text: String,
+        attachments: [ChatAttachment],
+        to ipAddress: String,
+        recipientName: String?
+    ) {
+        let wireText = FeiQMessageFormatter.wireText(text)
+        if attachments.isEmpty {
+            messageTransportService.sendText(
+                wireText,
+                to: ipAddress,
+                recipientName: recipientName
+            )
+        } else if attachments.allSatisfy(\.isImage) {
+            inlineImageService.send(
+                wireText,
+                images: attachments,
+                to: ipAddress,
+                recipientName: recipientName
+            )
+        } else {
+            fileTransferService.send(
+                wireText,
+                attachments: attachments,
+                to: ipAddress,
+                recipientName: recipientName
+            )
+        }
     }
 
     func sendMessage(
@@ -274,20 +341,12 @@ final class DefaultChatRepository: ChatRepository {
         unreadCount: Int
     ) {
         persistMessage(message, for: peer, unreadCount: unreadCount)
-        if message.attachments.isEmpty {
-            networkService.sendText(
-                FeiQMessageFormatter.wireText(message.text),
-                to: peer.ipAddress,
-                recipientName: peer.displayName
-            )
-        } else {
-            networkService.sendFileMessage(
-                FeiQMessageFormatter.wireText(message.text),
-                attachments: message.attachments,
-                to: peer.ipAddress,
-                recipientName: peer.displayName
-            )
-        }
+        sendContent(
+            text: message.text,
+            attachments: message.attachments,
+            to: peer.ipAddress,
+            recipientName: peer.displayName
+        )
     }
 
     func sendGroupMessage(
@@ -301,13 +360,12 @@ final class DefaultChatRepository: ChatRepository {
             unreadCount: 0
         )
 
-        let localNickname = stateQueue.sync { identity.nickname }
-        let relayText = FeiQGroupRelayFormatter.makeText(
+        let localNickname = sessionRepository.identity.nickname
+        let relayText = groupProtocolService.makeRelayText(
             groupName: group.displayName,
             senderName: localNickname,
             text: message.text
         )
-        let wireText = FeiQMessageFormatter.wireText(relayText)
         var sentCount = 0
         var sentAddresses = Set<String>()
         for member in members where member.isOnline {
@@ -315,20 +373,12 @@ final class DefaultChatRepository: ChatRepository {
             guard !address.isEmpty, sentAddresses.insert(address).inserted else {
                 continue
             }
-            if message.attachments.isEmpty {
-                networkService.sendText(
-                    wireText,
-                    to: address,
-                    recipientName: group.displayName
-                )
-            } else {
-                networkService.sendFileMessage(
-                    wireText,
-                    attachments: message.attachments,
-                    to: address,
-                    recipientName: group.displayName
-                )
-            }
+            sendContent(
+                text: relayText,
+                attachments: message.attachments,
+                to: address,
+                recipientName: group.displayName
+            )
             sentCount += 1
         }
 
@@ -347,8 +397,8 @@ final class DefaultChatRepository: ChatRepository {
     ) {
         attachmentQueue.async { [self] in
             do {
-                let attachment = try attachmentStorageService.prepareOutgoingImage(from: fileURL)
-                let localNickname = stateQueue.sync { identity.nickname }
+                let attachment = try attachmentRepository.prepareOutgoingImage(from: fileURL)
+                let localNickname = sessionRepository.identity.nickname
                 let message = ChatMessage(
                     direction: .outgoing,
                     text: "",
@@ -357,8 +407,8 @@ final class DefaultChatRepository: ChatRepository {
                     attachments: [attachment]
                 )
                 persistMessage(message, for: peer, unreadCount: unreadCount)
-                networkService.sendFileMessage(
-                    "",
+                sendContent(
+                    text: "",
                     attachments: [attachment],
                     to: peer.ipAddress,
                     recipientName: peer.displayName
@@ -374,8 +424,8 @@ final class DefaultChatRepository: ChatRepository {
         from fileURL: URL,
         completion: @escaping (Result<ChatAttachment, Error>) -> Void
     ) {
-        attachmentQueue.async { [attachmentStorageService] in
-            completion(Result { try attachmentStorageService.prepareOutgoingImage(from: fileURL) })
+        attachmentQueue.async { [attachmentRepository] in
+            completion(Result { try attachmentRepository.prepareOutgoingImage(from: fileURL) })
         }
     }
 
@@ -383,10 +433,10 @@ final class DefaultChatRepository: ChatRepository {
         attachmentID: String, messageID: UUID, conversationID: String,
         completion: @escaping (Result<ChatMessage, Error>) -> Void
     ) {
-        historyService.removeImage(
+        messageRepository.removeImage(
             attachmentID: attachmentID, messageID: messageID, conversationID: conversationID,
-            deleteUnreferencedFile: { [attachmentStorageService] attachment in
-                try attachmentStorageService.deleteManagedImage(attachment)
+            deleteUnreferencedFile: { [attachmentRepository] attachment in
+                try attachmentRepository.deleteManagedImage(attachment)
             }
         ) { [weak self] result in
             guard let self else { return }
@@ -404,8 +454,8 @@ final class DefaultChatRepository: ChatRepository {
     }
 
     func deleteDraftImage(_ attachment: ChatAttachment, completion: @escaping (Result<Void, Error>) -> Void) {
-        attachmentQueue.async { [attachmentStorageService] in
-            completion(Result { try attachmentStorageService.deleteManagedImage(attachment) })
+        attachmentQueue.async { [attachmentRepository] in
+            completion(Result { try attachmentRepository.deleteManagedImage(attachment) })
         }
     }
 
@@ -414,7 +464,7 @@ final class DefaultChatRepository: ChatRepository {
         conversationID: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        historyService.deleteMessage(
+        messageRepository.deleteMessage(
             id: message.id,
             conversationID: conversationID
         ) { [weak self] result in
@@ -424,7 +474,7 @@ final class DefaultChatRepository: ChatRepository {
                 case .success(let attachments):
                     for attachment in attachments {
                         do {
-                            try self.attachmentStorageService.deleteManagedAttachment(attachment)
+                            try self.attachmentRepository.deleteManagedAttachment(attachment)
                         } catch {
                             self.emit(.log("删除消息附件失败：\(attachment.fileName) · \(error.localizedDescription)"))
                         }
@@ -443,7 +493,7 @@ final class DefaultChatRepository: ChatRepository {
     ) {
         attachmentQueue.async { [self] in
             do {
-                completion(.success(try attachmentStorageService.prepareOutgoingFile(from: fileURL)))
+                completion(.success(try attachmentRepository.prepareOutgoingFile(from: fileURL)))
             } catch {
                 completion(.failure(error))
             }
@@ -458,8 +508,8 @@ final class DefaultChatRepository: ChatRepository {
     ) {
         attachmentQueue.async { [self] in
             do {
-                let attachment = try attachmentStorageService.prepareOutgoingFile(from: fileURL)
-                let localNickname = stateQueue.sync { identity.nickname }
+                let attachment = try attachmentRepository.prepareOutgoingFile(from: fileURL)
+                let localNickname = sessionRepository.identity.nickname
                 let message = ChatMessage(
                     direction: .outgoing,
                     text: "",
@@ -468,8 +518,8 @@ final class DefaultChatRepository: ChatRepository {
                     attachments: [attachment]
                 )
                 persistMessage(message, for: peer, unreadCount: unreadCount)
-                networkService.sendFileMessage(
-                    "",
+                sendContent(
+                    text: "",
                     attachments: [attachment],
                     to: peer.ipAddress,
                     recipientName: peer.displayName
@@ -488,7 +538,7 @@ final class DefaultChatRepository: ChatRepository {
     ) {
         attachmentQueue.async { [self] in
             do {
-                completion(.success(try attachmentStorageService.prepareOutgoingImage(
+                completion(.success(try attachmentRepository.prepareOutgoingImage(
                     from: data,
                     suggestedFileName: suggestedFileName
                 )))
@@ -512,8 +562,8 @@ final class DefaultChatRepository: ChatRepository {
     ) {
         attachmentQueue.async { [self] in
             do {
-                let attachment = try attachmentStorageService.prepareOutgoingImage(from: fileURL)
-                let localNickname = stateQueue.sync { identity.nickname }
+                let attachment = try attachmentRepository.prepareOutgoingImage(from: fileURL)
+                let localNickname = sessionRepository.identity.nickname
                 let message = ChatMessage(
                     direction: .outgoing,
                     text: "",
@@ -523,7 +573,7 @@ final class DefaultChatRepository: ChatRepository {
                 )
                 persistGroupMessage(message, for: group, unreadCount: 0)
 
-                let relayText = FeiQGroupRelayFormatter.makeText(
+                let relayText = groupProtocolService.makeRelayText(
                     groupName: group.displayName,
                     senderName: localNickname,
                     text: ""
@@ -535,8 +585,8 @@ final class DefaultChatRepository: ChatRepository {
                     guard !address.isEmpty, sentAddresses.insert(address).inserted else {
                         continue
                     }
-                    networkService.sendFileMessage(
-                        relayText,
+                    sendContent(
+                        text: relayText,
                         attachments: [attachment],
                         to: address,
                         recipientName: group.displayName
@@ -564,8 +614,8 @@ final class DefaultChatRepository: ChatRepository {
     ) {
         attachmentQueue.async { [self] in
             do {
-                let attachment = try attachmentStorageService.prepareOutgoingFile(from: fileURL)
-                let localNickname = stateQueue.sync { identity.nickname }
+                let attachment = try attachmentRepository.prepareOutgoingFile(from: fileURL)
+                let localNickname = sessionRepository.identity.nickname
                 let message = ChatMessage(
                     direction: .outgoing,
                     text: "",
@@ -575,7 +625,7 @@ final class DefaultChatRepository: ChatRepository {
                 )
                 persistGroupMessage(message, for: group, unreadCount: 0)
 
-                let relayText = FeiQGroupRelayFormatter.makeText(
+                let relayText = groupProtocolService.makeRelayText(
                     groupName: group.displayName,
                     senderName: localNickname,
                     text: ""
@@ -587,8 +637,8 @@ final class DefaultChatRepository: ChatRepository {
                     guard !address.isEmpty, sentAddresses.insert(address).inserted else {
                         continue
                     }
-                    networkService.sendFileMessage(
-                        relayText,
+                    sendContent(
+                        text: relayText,
                         attachments: [attachment],
                         to: address,
                         recipientName: group.displayName
@@ -613,7 +663,7 @@ final class DefaultChatRepository: ChatRepository {
         for peer: FeiQPeer,
         unreadCount: Int
     ) {
-        historyService.saveMessage(
+        messageRepository.saveMessage(
             message,
             for: peer,
             unreadCount: unreadCount
@@ -625,7 +675,7 @@ final class DefaultChatRepository: ChatRepository {
         for group: ChatGroup,
         unreadCount: Int
     ) {
-        historyService.saveMessage(
+        messageRepository.saveMessage(
             message,
             for: group,
             unreadCount: unreadCount
@@ -637,74 +687,41 @@ final class DefaultChatRepository: ChatRepository {
         from sender: String,
         conversationID: String
     ) {
-        notificationService.notifyIncomingMessage(
-            from: sender,
+        notificationRepository.notifyIncomingMessage(
             text: text,
+            from: sender,
             conversationID: conversationID
         )
     }
 
     func setUnreadCount(_ count: Int, for peerID: String) {
-        historyService.setUnreadCount(count, for: peerID)
+        messageRepository.setUnreadCount(count, for: peerID)
     }
 
     func savePeer(_ peer: FeiQPeer) {
-        stateQueue.sync {
-            peersByID[peer.id] = peer
-        }
-        historyService.savePeer(peer)
+        sessionRepository.savePeer(peer)
     }
 
     func saveGroup(_ group: ChatGroup) {
-        stateQueue.sync {
-            groupsByID[group.id] = group
-        }
-        historyService.saveGroup(group)
+        groupRepository.save(group)
     }
 
     func deleteGroup(_ groupID: String) {
-        _ = stateQueue.sync {
-            groupsByID.removeValue(forKey: groupID)
-        }
-        historyService.deleteGroup(groupID)
+        groupRepository.delete(groupID: groupID)
     }
 
     func restorePeers(_ peers: [FeiQPeer]) {
-        stateQueue.sync {
-            for peer in peers {
-                if let livePeer = peersByID[peer.id], livePeer.isOnline {
-                    continue
-                }
-                peersByID[peer.id] = peer
-            }
-        }
+        sessionRepository.restore(peers)
     }
 
     func restoreGroups(_ groups: [ChatGroup]) {
-        stateQueue.sync {
-            for group in groups {
-                groupsByID[group.id] = group
-            }
-        }
+        groupRepository.restore(groups)
     }
 
     func markOfflinePeers(before cutoff: Date) {
-        let changedPeers = stateQueue.sync { () -> [FeiQPeer] in
-            var changed: [FeiQPeer] = []
-            for (peerID, currentPeer) in peersByID {
-                guard currentPeer.isOnline, currentPeer.lastSeen < cutoff else {
-                    continue
-                }
-                var offlinePeer = currentPeer
-                offlinePeer.isOnline = false
-                peersByID[peerID] = offlinePeer
-                changed.append(offlinePeer)
-            }
-            return changed
-        }
+        let changedPeers = sessionRepository.markOffline(before: cutoff)
 
         for peer in changedPeers {
-            historyService.savePeer(peer)
             emit(.peerUpdated(peer))
         }
     }
@@ -712,7 +729,7 @@ final class DefaultChatRepository: ChatRepository {
     func loadSnapshot(
         completion: @escaping (Result<ChatHistorySnapshot, Error>) -> Void
     ) {
-        historyService.loadSnapshot(completion: completion)
+        messageRepository.loadSnapshot(completion: completion)
     }
 
     func loadRecentMessages(
@@ -720,7 +737,7 @@ final class DefaultChatRepository: ChatRepository {
         limit: Int,
         completion: @escaping (Result<ChatHistoryPage, Error>) -> Void
     ) {
-        historyService.loadRecentMessages(
+        messageRepository.loadRecentMessages(
             for: peerID,
             limit: limit,
             completion: completion
@@ -733,7 +750,7 @@ final class DefaultChatRepository: ChatRepository {
         limit: Int,
         completion: @escaping (Result<ChatHistoryPage, Error>) -> Void
     ) {
-        historyService.loadEarlierMessages(
+        messageRepository.loadEarlierMessages(
             for: peerID,
             before: message,
             limit: limit,
@@ -746,7 +763,7 @@ final class DefaultChatRepository: ChatRepository {
         limit: Int,
         completion: @escaping (Result<[ChatReceivedFile], Error>) -> Void
     ) {
-        historyService.loadReceivedFiles(
+        messageRepository.loadReceivedFiles(
             for: peerID,
             limit: limit,
             completion: completion
@@ -759,7 +776,7 @@ final class DefaultChatRepository: ChatRepository {
         transport: FeiQTransport,
         sourcePort: UInt16
     ) {
-        let currentIdentity = stateQueue.sync { identity }
+        let currentIdentity = sessionRepository.identity
 
         // A broadcast may be delivered back to its sender on some adapters.
         if packet.senderName == currentIdentity.nickname,
@@ -768,10 +785,10 @@ final class DefaultChatRepository: ChatRepository {
         }
 
         if packet.isFeiQPresencePacket {
-            let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
+            let peer = sessionRepository.upsertPeer(packet: packet, ipAddress: ipAddress)
             emit(.peerUpdated(peer))
             if packet.isFeiQEntryRequest {
-                networkService.replyToEntry(from: ipAddress)
+                discoveryService.replyToEntry(from: ipAddress)
             }
             return
         }
@@ -792,7 +809,7 @@ final class DefaultChatRepository: ChatRepository {
             guard recentRemoteAssistanceRequests[requestKey] == nil else { return }
             recentRemoteAssistanceRequests[requestKey] = now
 
-            let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
+            let peer = sessionRepository.upsertPeer(packet: packet, ipAddress: ipAddress)
             emit(.peerUpdated(peer))
             emit(.remoteAssistanceRequested(FeiQRemoteAssistanceRequest(
                 id: requestKey,
@@ -809,7 +826,7 @@ final class DefaultChatRepository: ChatRepository {
             lastReceivedShakes = lastReceivedShakes.filter { now.timeIntervalSince($0.value) < 3 }
             guard lastReceivedShakes[ipAddress] == nil else { return }
             lastReceivedShakes[ipAddress] = now
-            let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
+            let peer = sessionRepository.upsertPeer(packet: packet, ipAddress: ipAddress)
             emit(.peerUpdated(peer))
             emit(.peerShook(peer))
 
@@ -817,7 +834,7 @@ final class DefaultChatRepository: ChatRepository {
             emit(.log("来自 \(ipAddress) 的抖一抖已确认"))
 
         case .inputting, .inputEnd:
-            let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
+            let peer = sessionRepository.upsertPeer(packet: packet, ipAddress: ipAddress)
             emit(.peerUpdated(peer))
             emit(.peerTyping(
                 peer: peer,
@@ -825,28 +842,28 @@ final class DefaultChatRepository: ChatRepository {
             ))
 
         case .broadcastEntry:
-            let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
+            let peer = sessionRepository.upsertPeer(packet: packet, ipAddress: ipAddress)
             emit(.peerUpdated(peer))
-            networkService.replyToEntry(from: ipAddress)
+            discoveryService.replyToEntry(from: ipAddress)
 
         case .answerEntry, .answerList, .sendInfo:
-            let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
+            let peer = sessionRepository.upsertPeer(packet: packet, ipAddress: ipAddress)
             emit(.peerUpdated(peer))
 
         case .broadcastExit:
-            if let peer = markPeerOffline(ipAddress: ipAddress) {
+            if let peer = sessionRepository.markPeerOffline(ipAddress: ipAddress) {
                 emit(.peerUpdated(peer))
             }
 
         case .sendMessage:
-            let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
+            let peer = sessionRepository.upsertPeer(packet: packet, ipAddress: ipAddress)
             emit(.peerUpdated(peer))
 
             // Acknowledge the wire packet first, even if it contains only
             // formatting metadata, so the Windows sender does not report a
             // delivery failure.
             let text = FeiQMessageFormatter.displayText(packet.additionalText)
-            networkService.acknowledge(packet, to: ipAddress)
+            messageTransportService.acknowledge(packet, to: ipAddress)
             let packetKey = ipAddress + "/" + String(packet.packetNumber)
             guard receivedMessagePackets[packetKey] == nil else { return }
             receivedMessagePackets = receivedMessagePackets.filter { Date().timeIntervalSince($0.value) < 180 }
@@ -980,8 +997,8 @@ final class DefaultChatRepository: ChatRepository {
 
             do {
                 let local = try remote.isImage
-                    ? attachmentStorageService.prepareIncomingImage(for: remote)
-                    : attachmentStorageService.prepareIncomingFile(for: remote)
+                    ? attachmentRepository.prepareIncomingImage(for: remote)
+                    : attachmentRepository.prepareIncomingFile(for: remote)
                 preparedAttachments.append((remote: remote, local: local))
             } catch {
                 preparationFailureCount += 1
@@ -1006,7 +1023,7 @@ final class DefaultChatRepository: ChatRepository {
 
         for (index, prepared) in preparedAttachments.enumerated() {
             group.enter()
-            networkService.downloadFile(
+            fileTransferService.download(
                 prepared.remote,
                 packetNumber: packetNumber,
                 from: ipAddress,
@@ -1053,19 +1070,14 @@ final class DefaultChatRepository: ChatRepository {
              ? .messageUpdated(message: incomingMessage, peer: peer)
              : .messageReceived(message: incomingMessage, peer: peer))
 
-        let matchingGroups = stateQueue.sync {
-            groupsByID.values
-                .filter { $0.memberIDs.contains(peer.id) }
-                .sorted { $0.createdAt < $1.createdAt }
-                .map { group in
-                    (
-                        group: group,
-                        members: group.memberIDs.compactMap { peersByID[$0] }
-                    )
-                }
+        let matchingGroups = groupRepository.groups(containing: peer.id).map { group in
+            (
+                group: group,
+                members: sessionRepository.peers(withIDs: group.memberIDs)
+            )
         }
 
-        let relayedMessage = FeiQGroupRelayFormatter.parse(incomingMessage.text)
+        let relayedMessage = groupProtocolService.parseRelayText(incomingMessage.text)
         for matchingGroup in matchingGroups {
             let group = matchingGroup.group
             // A relayed packet already represents a message that another
@@ -1159,7 +1171,7 @@ final class DefaultChatRepository: ChatRepository {
         group: ChatGroup,
         members: [FeiQPeer]
     ) {
-        let relayText = FeiQGroupRelayFormatter.makeText(
+        let relayText = groupProtocolService.makeRelayText(
             groupName: group.displayName,
             senderName: message.senderName,
             text: message.text
@@ -1180,20 +1192,12 @@ final class DefaultChatRepository: ChatRepository {
                 continue
             }
 
-            if message.attachments.isEmpty {
-                networkService.sendText(
-                    FeiQMessageFormatter.wireText(relayText),
-                    to: address,
-                    recipientName: group.displayName
-                )
-            } else {
-                networkService.sendFileMessage(
-                    relayText,
-                    attachments: relayAttachments,
-                    to: address,
-                    recipientName: group.displayName
-                )
-            }
+            sendContent(
+                text: relayText,
+                attachments: relayAttachments,
+                to: address,
+                recipientName: group.displayName
+            )
             sentCount += 1
         }
 
@@ -1205,104 +1209,6 @@ final class DefaultChatRepository: ChatRepository {
                 : (message.attachments.allSatisfy { $0.kind == .image } ? "图片" : "文件")
             emit(.log("群聊「" + group.displayName + "」已将「" + message.senderName + "」的" + contentType + "中继给 " + String(sentCount) + " 位成员"))
         }
-    }
-
-    @discardableResult
-    private func upsertPeer(packet: FeiQPacket, ipAddress: String) -> FeiQPeer {
-        let stableID = ipAddress == "未知地址" || ipAddress.isEmpty
-            ? packet.senderHost
-            : ipAddress
-        let isPresencePacket = packet.commandType == .broadcastEntry
-            || packet.commandType == .answerEntry
-            || packet.isFeiQPresencePacket
-
-        // FeiQ builds do not all put the nickname in the same header field.
-        // Presence packets carry the nickname used by the contact list, while
-        // message packets may carry the Windows account/machine user instead.
-        let packetName = packet.senderName.isEmpty
-            ? packet.senderHost
-            : packet.senderName
-        let packetHost = packet.senderHost.isEmpty
-            ? ipAddress
-            : packet.senderHost
-        let advertisedName = packet.entryName?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let presenceName = advertisedName.isEmpty ? packetName : advertisedName
-        let presenceGroup = packet.entryGroup?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        let result = stateQueue.sync { () -> (peer: FeiQPeer, shouldPersist: Bool) in
-            if let existingPeer = peersByID[stableID] {
-                var peer = existingPeer
-                let name: String
-                let host: String
-                let updatedGroup: String
-
-                if isPresencePacket {
-                    name = presenceName
-                    host = packetHost
-                    updatedGroup = presenceGroup.isEmpty
-                        ? peer.group
-                        : presenceGroup
-                } else {
-                    name = peer.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? packetName
-                        : peer.name
-                    host = peer.hostName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? packetHost
-                        : peer.hostName
-                    updatedGroup = peer.group
-                }
-
-                let metadataChanged = peer.name != name
-                    || peer.hostName != host
-                    || peer.ipAddress != ipAddress
-                    || peer.group != updatedGroup
-                let becameOnline = !peer.isOnline
-                peer.name = name
-                peer.hostName = host
-                peer.ipAddress = ipAddress
-                peer.group = updatedGroup
-                peer.lastSeen = Date()
-                peer.isOnline = true
-                peersByID[stableID] = peer
-                return (peer, metadataChanged || becameOnline)
-            }
-
-            let peer = FeiQPeer(
-                id: stableID,
-                name: isPresencePacket ? presenceName : packetName,
-                hostName: packetHost,
-                ipAddress: ipAddress,
-                group: isPresencePacket ? presenceGroup : "",
-                lastSeen: Date(),
-                isOnline: true
-            )
-            peersByID[stableID] = peer
-            return (peer, true)
-        }
-
-        if result.shouldPersist {
-            historyService.savePeer(result.peer)
-        }
-        return result.peer
-    }
-
-    private func markPeerOffline(ipAddress: String) -> FeiQPeer? {
-        let peer = stateQueue.sync { () -> FeiQPeer? in
-            guard let peerID = peersByID.first(where: { $0.value.ipAddress == ipAddress })?.key,
-                  var peer = peersByID[peerID] else {
-                return nil
-            }
-            peer.isOnline = false
-            peersByID[peerID] = peer
-            return peer
-        }
-
-        if let peer {
-            historyService.savePeer(peer)
-        }
-        return peer
     }
 
     private func emit(_ event: ChatRepositoryEvent) {

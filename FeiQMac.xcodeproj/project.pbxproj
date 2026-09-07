@@ -41,6 +41,12 @@
 		D10000000000000000000001 /* FilePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000002 /* FilePreviewView.swift */; };
 		D30000000000000000000001 /* ChatImageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000002 /* ChatImageView.swift */; };
 		D20000000000000000000001 /* ScreenshotCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000002 /* ScreenshotCaptureService.swift */; };
+		E10000000000000000000001 /* MessageRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000002 /* MessageRepository.swift */; };
+		E10000000000000000000003 /* AttachmentRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000004 /* AttachmentRepository.swift */; };
+		E10000000000000000000005 /* GroupRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000006 /* GroupRepository.swift */; };
+		E10000000000000000000007 /* SessionRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000008 /* SessionRepository.swift */; };
+		E10000000000000000000009 /* NotificationRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000A /* NotificationRepository.swift */; };
+		F10000000000000000000001 /* NetworkServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000002 /* NetworkServices.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -80,6 +86,12 @@
 		D10000000000000000000002 /* FilePreviewView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
 		D20000000000000000000002 /* ScreenshotCaptureService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ScreenshotCaptureService.swift; sourceTree = "<group>"; };
 		D30000000000000000000002 /* ChatImageView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatImageView.swift; sourceTree = "<group>"; };
+		E10000000000000000000002 /* MessageRepository.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MessageRepository.swift; sourceTree = "<group>"; };
+		E10000000000000000000004 /* AttachmentRepository.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AttachmentRepository.swift; sourceTree = "<group>"; };
+		E10000000000000000000006 /* GroupRepository.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = GroupRepository.swift; sourceTree = "<group>"; };
+		E10000000000000000000008 /* SessionRepository.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SessionRepository.swift; sourceTree = "<group>"; };
+		E1000000000000000000000A /* NotificationRepository.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = NotificationRepository.swift; sourceTree = "<group>"; };
+		F10000000000000000000002 /* NetworkServices.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = NetworkServices.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -161,6 +173,7 @@
 			children = (
 				A10000000000000000000036 /* GBKCodec.swift */,
 				A10000000000000000000037 /* FeiQNetworkService.swift */,
+				F10000000000000000000002 /* NetworkServices.swift */,
 			);
 			path = Network;
 			sourceTree = "<group>";
@@ -216,6 +229,11 @@
 			children = (
 				A10000000000000000000071 /* ChatRepository.swift */,
 				A10000000000000000000072 /* AppSettingsRepository.swift */,
+				E10000000000000000000002 /* MessageRepository.swift */,
+				E10000000000000000000004 /* AttachmentRepository.swift */,
+				E10000000000000000000006 /* GroupRepository.swift */,
+				E10000000000000000000008 /* SessionRepository.swift */,
+				E1000000000000000000000A /* NotificationRepository.swift */,
 			);
 			path = Repositories;
 			sourceTree = "<group>";
@@ -355,6 +373,12 @@
 				D10000000000000000000001 /* FilePreviewView.swift in Sources */,
 				D30000000000000000000001 /* ChatImageView.swift in Sources */,
 				D20000000000000000000001 /* ScreenshotCaptureService.swift in Sources */,
+				E10000000000000000000001 /* MessageRepository.swift in Sources */,
+				E10000000000000000000003 /* AttachmentRepository.swift in Sources */,
+				E10000000000000000000005 /* GroupRepository.swift in Sources */,
+				E10000000000000000000007 /* SessionRepository.swift in Sources */,
+				E10000000000000000000009 /* NotificationRepository.swift in Sources */,
+				F10000000000000000000001 /* NetworkServices.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

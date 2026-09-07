@@ -133,13 +133,32 @@ enum IncomingImageRepositoryChecks {
         let saved = DispatchSemaphore(value: 0)
         history.loadRecentMessages(for: peer.id, limit: 60) { result in
             let messages = try! result.get().messages
-            precondition(messages.count == 1 && messages[0] == complete, "SQLite updates same row")
+            let stored = messages.first
+            let sameMessage = messages.count == 1
+                && stored?.id == complete.id
+                && stored?.direction == complete.direction
+                && stored?.text == complete.text
+                && stored?.senderName == complete.senderName
+                && stored?.recipientName == complete.recipientName
+                && stored?.attachments == complete.attachments
+                && abs((stored?.date.timeIntervalSince1970 ?? 0) - complete.date.timeIntervalSince1970) < 0.001
+            precondition(sameMessage, "SQLite updates same row")
             saved.signal()
         }
         precondition(saved.wait(timeout: .now() + 5) == .success)
         let reopened = ChatHistoryStore(databaseURL: db, legacyURL: legacy)
         reopened.loadRecentMessages(for: peer.id, limit: 60) { result in
-            precondition(try! result.get().messages == [complete], "completed attachment survives reopening")
+            let messages = try! result.get().messages
+            let stored = messages.first
+            let sameMessage = messages.count == 1
+                && stored?.id == complete.id
+                && stored?.direction == complete.direction
+                && stored?.text == complete.text
+                && stored?.senderName == complete.senderName
+                && stored?.recipientName == complete.recipientName
+                && stored?.attachments == complete.attachments
+                && abs((stored?.date.timeIntervalSince1970 ?? 0) - complete.date.timeIntervalSince1970) < 0.001
+            precondition(sameMessage, "completed attachment survives reopening")
             saved.signal()
         }
         precondition(saved.wait(timeout: .now() + 5) == .success)
@@ -250,7 +269,14 @@ enum IncomingImageRepositoryChecks {
         precondition(saved.wait(timeout: .now() + 5) == .success)
         history.loadRecentMessages(for: peer.id, limit: 60) { result in
             let restored = try! result.get().messages.first { $0.id == rollbackMessage.id }
-            precondition(restored == rollbackMessage && rollbackImage.isAvailable, "failed deletion rolls back history")
+            let fieldsMatch = restored?.id == rollbackMessage.id
+                && restored?.direction == rollbackMessage.direction
+                && restored?.text == rollbackMessage.text
+                && restored?.senderName == rollbackMessage.senderName
+                && restored?.recipientName == rollbackMessage.recipientName
+                && restored?.attachments == rollbackMessage.attachments
+                && abs((restored?.date.timeIntervalSince1970 ?? 0) - rollbackMessage.date.timeIntervalSince1970) < 0.001
+            precondition(fieldsMatch && rollbackImage.isAvailable, "failed deletion rolls back history")
             saved.signal()
         }
         precondition(saved.wait(timeout: .now() + 5) == .success)

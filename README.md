@@ -121,8 +121,8 @@ View → ViewModel → Repository → Service → Model
 
 - `View`：只负责界面展示、用户交互和局部 UI 状态，不直接访问网络或数据库。
 - `ViewModel`：管理界面可观察状态、会话切换、未读数、加载状态和动画选择，不直接操作底层存储或 Socket。
-- `Repository`：组合网络、历史记录和通知服务，完成业务编排、数据转换、会话归并和消息路由。
-- `Service`：提供网络、SQLite、UserDefaults 和 macOS 通知等底层能力，不承载页面业务逻辑。
+- `Repository`：负责业务编排和数据转换。`DefaultChatRepository` 作为协调器，只负责事件路由；消息、附件、群组、联系人会话和通知分别由 `MessageRepository`、`AttachmentRepository`、`GroupRepository`、`SessionRepository` 和 `NotificationRepository` 承担。
+- `Service`：提供网络、SQLite、UserDefaults 和 macOS 通知等底层能力，不承载页面业务逻辑。网络能力进一步拆分为 `DiscoveryService`、`MessageTransportService`、`FileTransferService`、`InlineImageService` 和 `GroupProtocolService`。
 - `Model`：定义联系人、消息、群聊、身份信息及飞秋协议报文等领域数据结构。
 
 ### 目录结构
@@ -131,10 +131,10 @@ View → ViewModel → Repository → Service → Model
 FeiQMac/
 ├── Models/          # 联系人、消息、群聊、身份和领域模型
 ├── Protocol/        # 飞秋报文格式、命令码、编码和表情转换
-├── Network/         # UDP/TCP Socket 和网络生命周期管理
+├── Network/         # UDP/TCP Socket 及按能力拆分的网络服务
 ├── Persistence/     # SQLite 数据库、表结构、分页查询和旧数据迁移
 ├── Services/        # 历史记录、通知和用户设置等底层服务
-├── Repositories/    # 网络、存储和通知的业务组合层
+├── Repositories/    # 消息、附件、群组、会话、通知和总协调器
 ├── ViewModels/      # SwiftUI 页面状态和用户交互逻辑
 ├── Views/           # 主界面、侧栏、聊天页、设置、群聊和公共组件
 └── Resources/       # Info.plist 和应用资源
@@ -347,6 +347,7 @@ Mac 端可以提供本地增强体验，但不能把这些能力误认为 Window
 | 日期 | 记录 |
 | --- | --- |
 | 2026-09-07 | 完成项目整体能力审查，确认当前基础能力、可直接实现功能和协议风险边界；本次仅更新路线图，未修改通信协议。 |
+| 2026-09-07 | 完成第一阶段架构拆分：新增消息、附件、群组、会话、通知 Repository，以及发现、消息、文件、内嵌图片和群协议 Service；`DefaultChatRepository` 调整为业务协调器。 |
 
 后续开发完成后，应在本表追加日期、功能、兼容客户端版本、测试环境和已知限制，并同步更新上面的状态表。
 

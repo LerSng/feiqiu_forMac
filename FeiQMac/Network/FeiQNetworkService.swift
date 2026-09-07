@@ -36,12 +36,7 @@ enum FeiQFileTransferError: LocalizedError {
     }
 }
 
-protocol FeiQNetworkServiceProtocol: AnyObject {
-    var onInlineImage: ((Data, String, Int, FeiQPacket, String) -> Void)? { get set }
-    var onPacket: ((FeiQPacket, String, FeiQTransport, UInt16) -> Void)? { get set }
-    var onLog: ((String) -> Void)? { get set }
-    var onStateChange: ((Bool) -> Void)? { get set }
-
+protocol FeiQNetworkServiceProtocol: FeiQNetworkEventSource {
     func start(name: String, host: String, group: String)
     func stop()
     func updateIdentity(name: String, host: String, group: String)

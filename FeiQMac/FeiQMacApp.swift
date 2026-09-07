@@ -8,11 +8,21 @@ struct FeiQMacApp: App {
         let notificationService = FeiQNotificationService()
         notificationService.requestAuthorization()
 
+        let networkService = FeiQNetworkService()
+        let historyService = SQLiteChatHistoryService.makeDefault()
+        let attachmentStorageService = LocalChatAttachmentStorageService.makeDefault()
         let repository = DefaultChatRepository(
-            networkService: FeiQNetworkService(),
-            historyService: SQLiteChatHistoryService.makeDefault(),
-            attachmentStorageService: LocalChatAttachmentStorageService.makeDefault(),
-            notificationService: notificationService
+            eventSource: networkService,
+            discoveryService: DefaultDiscoveryService(networkService: networkService),
+            messageTransportService: DefaultMessageTransportService(networkService: networkService),
+            fileTransferService: DefaultFileTransferService(networkService: networkService),
+            inlineImageService: DefaultInlineImageService(networkService: networkService),
+            groupProtocolService: DefaultGroupProtocolService(),
+            messageRepository: DefaultMessageRepository(historyService: historyService),
+            attachmentRepository: DefaultAttachmentRepository(storageService: attachmentStorageService),
+            groupRepository: DefaultGroupRepository(historyService: historyService),
+            sessionRepository: DefaultSessionRepository(historyService: historyService),
+            notificationRepository: DefaultNotificationRepository(notificationService: notificationService)
         )
         let settingsRepository = DefaultAppSettingsRepository(
             service: UserDefaultsAppSettingsService()

@@ -67,10 +67,20 @@ struct ChatReceivedFile: Identifiable, Hashable, Sendable {
     let senderName: String
 }
 
+struct FeiQRemoteAssistanceRequest: Identifiable, Equatable, Sendable {
+    let id: String
+    let peer: FeiQPeer
+    let packetNumber: UInt64
+    let versionIdentifier: String
+    let payload: String
+    let receivedAt: Date
+}
+
 enum ChatRepositoryEvent: Sendable {
     case peerUpdated(FeiQPeer)
     case peerTyping(peer: FeiQPeer, isTyping: Bool)
     case peerShook(FeiQPeer)
+    case remoteAssistanceRequested(FeiQRemoteAssistanceRequest)
     case messageReceived(message: ChatMessage, peer: FeiQPeer)
     case messageUpdated(message: ChatMessage, peer: FeiQPeer)
     case groupMessageReceived(message: ChatMessage, group: ChatGroup)

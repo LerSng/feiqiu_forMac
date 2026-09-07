@@ -21,6 +21,8 @@ final class ChatViewModel: ObservableObject {
     @Published var draft = ""
     @Published private(set) var draftAttachments: [ChatAttachment] = []
     @Published private(set) var isPreparingPastedImage = false
+    @Published private(set) var isPreparingAttachment = false
+    @Published private(set) var isCapturingScreenshot = false
     @Published var searchText = ""
     @Published var nickname: String
     @Published var hostName: String
@@ -29,6 +31,7 @@ final class ChatViewModel: ObservableObject {
     @Published var showingSettings = false
     @Published private(set) var windowShakeID = UUID()
     @Published private(set) var shakeCoolingDown = false
+    @Published var remoteAssistanceRequest: FeiQRemoteAssistanceRequest?
 
     @Published var showingLogs = false
     @Published var showingGroupEditor = false
@@ -382,6 +385,8 @@ final class ChatViewModel: ObservableObject {
         let displayText = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = draftAttachments
         guard !isPreparingPastedImage,
+              !isPreparingAttachment,
+              !isCapturingScreenshot,
               !displayText.isEmpty || !attachments.isEmpty else { return }
 
         stopLocalTyping()
@@ -448,6 +453,32 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// Opens the native macOS area-selection overlay. The captured PNG is
+    /// passed through the same attachment pipeline as a pasted image, so it
+    /// appears in the draft area and is persisted only after sending.
+    func captureScreenshot() {
+        guard selectedConversationID != nil, !isCapturingScreenshot else { return }
+
+        isCapturingScreenshot = true
+        repository.captureScreenshot { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isCapturingScreenshot = false
+
+                switch result {
+                case .success(let data):
+                    self.pasteImage(data, suggestedFileName: "screenshot.png")
+                case .failure(let error):
+                    if let screenshotError = error as? ScreenshotCaptureError,
+                       case .cancelled = screenshotError {
+                        return
+                    }
+                    self.appendLog("截屏失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     func removeDraftAttachment(_ attachmentID: String) {
         draftAttachments.removeAll { $0.id == attachmentID }
     }
@@ -509,6 +540,56 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// Adds regular files to the composer. They are copied into the managed
+    /// Documents/飞秋 Mac/Files directory before the user presses Send, so a
+    /// later network transfer does not depend on the original picker URL.
+    func chooseAndAddFiles() {
+        guard selectedConversationID != nil else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.item]
+        panel.prompt = "添加文件"
+        panel.message = "选择要发送的文件"
+
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else {
+            return
+        }
+
+        isPreparingAttachment = true
+        prepareNextOutgoingFile(panel.urls, index: 0)
+    }
+
+    private func prepareNextOutgoingFile(_ urls: [URL], index: Int) {
+        guard index < urls.count else {
+            isPreparingAttachment = false
+            draftDidChange()
+            return
+        }
+
+        repository.prepareOutgoingFile(from: urls[index]) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+
+                guard self.selectedConversationID != nil else {
+                    self.isPreparingAttachment = false
+                    return
+                }
+
+                switch result {
+                case .success(let attachment):
+                    self.draftAttachments.append(attachment)
+                case .failure(let error):
+                    self.appendLog("文件准备失败：\(error.localizedDescription)")
+                }
+
+                self.prepareNextOutgoingFile(urls, index: index + 1)
+            }
+        }
+    }
+
     func clearLogs() {
         logs.removeAll()
     }
@@ -559,6 +640,13 @@ final class ChatViewModel: ObservableObject {
             )
             receiveDirectMessage(message, from: peer, isShake: true)
             windowShakeID = UUID()
+
+        case .remoteAssistanceRequested(let request):
+            mergePeer(request.peer)
+            remoteAssistanceRequest = request
+            appendLog(
+                "收到 \(request.peer.displayName) 的远程协助请求（0xB0），已等待用户确认"
+            )
 
         case .peerUpdated(let peer):
             mergePeer(peer)
@@ -643,6 +731,15 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    func dismissRemoteAssistanceRequest() {
+        remoteAssistanceRequest = nil
+    }
+
+    func showRemoteAssistanceLogs() {
+        remoteAssistanceRequest = nil
+        showingLogs = true
+    }
+
     private func selectConversation(_ conversationID: String) {
         if groups.contains(where: { $0.id == conversationID }) {
             selectGroup(conversationID)
@@ -669,6 +766,8 @@ final class ChatViewModel: ObservableObject {
         draft = ""
         draftAttachments.removeAll()
         isPreparingPastedImage = false
+        isPreparingAttachment = false
+        isCapturingScreenshot = false
         messagesByPeer.removeAll()
         historyMessageUpdates.removeAll()
         historyRequestGeneration += 1
@@ -914,7 +1013,16 @@ final class ChatViewModel: ObservableObject {
         if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return text
         }
-        return message.attachments.isEmpty ? "收到新消息" : "发送了一张图片"
+        guard !message.attachments.isEmpty else { return "收到新消息" }
+        let fileCount = message.attachments.filter { $0.kind == .file }.count
+        let imageCount = message.attachments.count - fileCount
+        if fileCount > 0 && imageCount > 0 {
+            return "收到 \(imageCount) 张图片和 \(fileCount) 个文件"
+        }
+        if fileCount > 0 {
+            return "收到 \(fileCount) 个文件"
+        }
+        return "收到 \(imageCount) 张图片"
     }
 
     func displayText(for message: ChatMessage) -> String {

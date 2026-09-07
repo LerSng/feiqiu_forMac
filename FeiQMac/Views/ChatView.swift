@@ -237,6 +237,7 @@ private struct ReceivedFilesPanel: View {
 
 private struct ReceivedFileRow: View {
     let file: ChatReceivedFile
+    @State private var showingPreview = false
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -247,10 +248,14 @@ private struct ReceivedFileRow: View {
 
     var body: some View {
         Button {
-            NSWorkspace.shared.activateFileViewerSelecting([file.attachment.localURL])
+            if file.attachment.isAvailable {
+                showingPreview = true
+            } else {
+                NSWorkspace.shared.activateFileViewerSelecting([file.attachment.localURL])
+            }
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: file.attachment.kind == .image ? "photo" : "doc")
+                Image(systemName: file.attachment.systemImageName)
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(FeiQUI.accent)
                     .frame(width: 28, height: 28)
@@ -272,7 +277,14 @@ private struct ReceivedFileRow: View {
             .padding(.vertical, 5)
         }
         .buttonStyle(.plain)
-        .help("在 Finder 中显示 \(file.attachment.fileName)")
+        .help(file.attachment.isAvailable ? "预览 \(file.attachment.fileName)" : "在 Finder 中显示文件")
+        .sheet(isPresented: $showingPreview) {
+            if file.attachment.kind == .file {
+                FilePreviewView(attachment: file.attachment)
+            } else {
+                ImagePreviewView(attachment: file.attachment)
+            }
+        }
     }
 }
 
@@ -714,8 +726,13 @@ private struct MessageBubble: View {
                 }
 
                 ForEach(message.attachments) { attachment in
-                    ImageAttachmentView(attachment: attachment)
-                        .frame(maxWidth: 360, alignment: isOutgoing ? .trailing : .leading)
+                    if attachment.kind == .image {
+                        ImageAttachmentView(attachment: attachment)
+                            .frame(maxWidth: 360, alignment: isOutgoing ? .trailing : .leading)
+                    } else {
+                        FileAttachmentView(attachment: attachment)
+                            .frame(maxWidth: 380, alignment: isOutgoing ? .trailing : .leading)
+                    }
                 }
             }
 
@@ -1045,6 +1062,12 @@ private struct ImagePreviewView: View {
 private struct MessageComposer: View {
     @EnvironmentObject private var model: ChatViewModel
     @State private var showingEmojiPicker = false
+    @AppStorage("chat.composer.editorHeight") private var savedEditorHeight = 112.0
+    @State private var editorHeight: CGFloat = 112
+    @State private var resizeStartHeight: CGFloat?
+
+    private let minimumEditorHeight: CGFloat = 78
+    private let maximumEditorHeight: CGFloat = 360
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1055,6 +1078,24 @@ private struct MessageComposer: View {
             }
 
             VStack(spacing: 0) {
+                ComposerResizeHandle(
+                    onChanged: {
+                        resizeStartHeight = editorHeight
+                    },
+                    onChangedTranslation: { translation in
+                        let startHeight = resizeStartHeight ?? editorHeight
+                        let proposedHeight = startHeight - translation
+                        editorHeight = min(
+                            max(proposedHeight, minimumEditorHeight),
+                            maximumEditorHeight
+                        )
+                    },
+                    onEnded: {
+                        savedEditorHeight = Double(editorHeight)
+                        resizeStartHeight = nil
+                    }
+                )
+
                 ZStack(alignment: .topLeading) {
                     PasteAwareTextEditor(
                         text: $model.draft,
@@ -1063,7 +1104,8 @@ private struct MessageComposer: View {
                         }
                     )
                         .font(.body)
-                        .frame(maxWidth: .infinity, minHeight: 92, maxHeight: 150)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: editorHeight)
 
                     if model.draft.isEmpty && model.draftAttachments.isEmpty {
                         Text("输入消息")
@@ -1074,7 +1116,8 @@ private struct MessageComposer: View {
                             .allowsHitTesting(false)
                     }
                 }
-                .frame(minHeight: 92, maxHeight: 150)
+                .frame(maxWidth: .infinity)
+                .frame(height: editorHeight)
                 .onChange(of: model.draft) { _, _ in
                     model.draftDidChange()
                 }
@@ -1104,9 +1147,38 @@ private struct MessageComposer: View {
                     .help("发送图片")
                     .disabled(model.selectedConversationID == nil)
 
-                    Image(systemName: "paperclip")
-                        .help("文件功能暂未开放")
-                        .foregroundStyle(.tertiary)
+                    Button {
+                        model.captureScreenshot()
+                    } label: {
+                        if model.isCapturingScreenshot {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 20, height: 20)
+                        } else {
+                            Image(systemName: "camera.viewfinder")
+                        }
+                    }
+                    .help("截取屏幕并添加到输入框")
+                    .disabled(
+                        model.selectedConversationID == nil
+                            || model.isCapturingScreenshot
+                            || model.isPreparingPastedImage
+                            || model.isPreparingAttachment
+                    )
+
+                    Button {
+                        model.chooseAndAddFiles()
+                    } label: {
+                        Image(systemName: "paperclip")
+                    }
+                    .help("添加文件")
+                    .disabled(model.selectedConversationID == nil || model.isPreparingAttachment)
+
+                    if model.isPreparingAttachment {
+                        ProgressView()
+                            .controlSize(.small)
+                            .help("正在准备文件")
+                    }
 
                     Spacer()
 
@@ -1147,12 +1219,69 @@ private struct MessageComposer: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .background(FeiQUI.chatBackground)
+        .onAppear {
+            editorHeight = min(
+                max(CGFloat(savedEditorHeight), minimumEditorHeight),
+                maximumEditorHeight
+            )
+        }
     }
 
     private var canSend: Bool {
         !model.isPreparingPastedImage
+            && !model.isPreparingAttachment
+            && !model.isCapturingScreenshot
             && (!model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !model.draftAttachments.isEmpty)
+    }
+}
+
+/// 输入框顶部的连续调整手柄。向上拖动扩大编辑区，向下拖动缩小编辑区。
+private struct ComposerResizeHandle: View {
+    let onChanged: () -> Void
+    let onDrag: (CGFloat) -> Void
+    let onEnded: () -> Void
+    @State private var isHovering = false
+    @State private var hasStartedDragging = false
+
+    init(
+        onChanged: @escaping () -> Void,
+        onChangedTranslation: @escaping (CGFloat) -> Void,
+        onEnded: @escaping () -> Void
+    ) {
+        self.onChanged = onChanged
+        self.onDrag = onChangedTranslation
+        self.onEnded = onEnded
+    }
+
+    var body: some View {
+        HStack {
+            Spacer()
+            Capsule()
+                .fill(isHovering ? FeiQUI.accent.opacity(0.65) : Color.secondary.opacity(0.28))
+                .frame(width: 34, height: 4)
+            Spacer()
+        }
+        .frame(height: 12)
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if !hasStartedDragging {
+                        hasStartedDragging = true
+                        onChanged()
+                    }
+                    onDrag(value.translation.height)
+                }
+                .onEnded { _ in
+                    hasStartedDragging = false
+                    onEnded()
+                }
+        )
+        .accessibilityElement()
+        .accessibilityLabel("调整输入框高度")
+        .accessibilityHint("向上或向下拖动以调整输入框高度")
     }
 }
 
@@ -1164,30 +1293,64 @@ private struct DraftAttachmentStrip: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(attachments) { attachment in
-                    ZStack(alignment: .topTrailing) {
-                        ImageAttachmentView(attachment: attachment)
-                            .frame(width: 88, height: 68)
-                            .clipped()
-
-                        Button {
-                            onRemove(attachment.id)
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
-                                .frame(width: 20, height: 20)
-                                .background(.black.opacity(0.65), in: Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(4)
-                        .help("移除这张图片")
+                    DraftAttachmentTile(attachment: attachment) {
+                        onRemove(attachment.id)
                     }
                 }
             }
-            .padding(.vertical, 2)
+            .padding(.horizontal, 2)
         }
         .hiddenScrollIndicators()
-        .frame(height: 76)
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .frame(height: 122)
+        .background(FeiQUI.cardBackground.opacity(0.42))
+        .overlay(alignment: .bottom) {
+            Divider()
+                .opacity(0.65)
+        }
+    }
+}
+
+private struct DraftAttachmentTile: View {
+    let attachment: ChatAttachment
+    let onRemove: () -> Void
+
+    private let tileHeight: CGFloat = 104
+
+    private var tileWidth: CGFloat {
+        attachment.kind == .image ? 168 : 300
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if attachment.kind == .image {
+                    ImageAttachmentView(attachment: attachment)
+                } else {
+                    FileAttachmentView(attachment: attachment)
+                }
+            }
+            .frame(width: tileWidth, height: tileHeight)
+            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 21, height: 21)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.8)
+                    }
+            }
+            .buttonStyle(.plain)
+            .padding(5)
+            .help("移除附件")
+        }
+        .frame(width: tileWidth, height: tileHeight)
     }
 }
 

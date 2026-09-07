@@ -7,6 +7,16 @@ enum ChatMessageDirection: String, Codable, Sendable {
 
 enum ChatAttachmentKind: String, Codable, Hashable, Sendable {
     case image
+    case file
+
+    var systemImageName: String {
+        switch self {
+        case .image:
+            return "photo"
+        case .file:
+            return "doc"
+        }
+    }
 }
 
 /// A file descriptor carried by the FeiQ/IP Messenger attachment section.
@@ -25,11 +35,22 @@ struct FeiQFileAttachment: Hashable, Sendable {
         return ["jpg", "jpeg", "png", "gif", "bmp", "tif", "tiff", "webp", "heic", "heif"]
             .contains(pathExtension)
     }
+
+    /// IP Messenger stores the low byte of file attributes as the file kind.
+    /// Directories are intentionally not downloaded by the first file-transfer
+    /// implementation; they need the separate GETDIRFILES stream protocol.
+    var isDirectory: Bool {
+        (fileAttributes & 0xFF) == 0x02
+    }
+
+    var isRegularFile: Bool {
+        !isDirectory && (fileAttributes & 0xFF) != 0x03
+    }
 }
 
 /// A locally available attachment rendered by the chat UI and persisted with
-/// the message. The local path points to the app's managed image directory,
-/// not to the sender's original path.
+/// the message. The local path points to the app's managed attachment
+/// directory, not to the sender's original path.
 struct ChatAttachment: Identifiable, Codable, Hashable, Sendable {
     let id: String
     let kind: ChatAttachmentKind
@@ -46,6 +67,18 @@ struct ChatAttachment: Identifiable, Codable, Hashable, Sendable {
 
     var isAvailable: Bool {
         FileManager.default.fileExists(atPath: localPath)
+    }
+
+    var isImage: Bool {
+        kind == .image
+    }
+
+    var isFile: Bool {
+        kind == .file
+    }
+
+    var systemImageName: String {
+        kind.systemImageName
     }
 
     var fileSizeDescription: String {
@@ -78,11 +111,12 @@ struct ChatAttachment: Identifiable, Codable, Hashable, Sendable {
     init(
         descriptor: FeiQFileAttachment,
         localPath: String,
-        mimeType: String
+        mimeType: String,
+        kind: ChatAttachmentKind? = nil
     ) {
         self.init(
             id: descriptor.fileID,
-            kind: .image,
+            kind: kind ?? (descriptor.isImage ? .image : .file),
             fileName: descriptor.fileName,
             fileSize: descriptor.fileSize,
             modifiedAt: descriptor.modifiedAt,

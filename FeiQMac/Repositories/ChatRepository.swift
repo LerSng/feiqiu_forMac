@@ -31,7 +31,26 @@ protocol ChatRepository: AnyObject {
         suggestedFileName: String?,
         completion: @escaping (Result<ChatAttachment, Error>) -> Void
     )
+    func captureScreenshot(
+        completion: @escaping (Result<Data, Error>) -> Void
+    )
+    func prepareOutgoingFile(
+        from fileURL: URL,
+        completion: @escaping (Result<ChatAttachment, Error>) -> Void
+    )
+    func sendFile(
+        from fileURL: URL,
+        to peer: FeiQPeer,
+        unreadCount: Int,
+        completion: @escaping (Result<ChatMessage, Error>) -> Void
+    )
     func sendGroupImage(
+        from fileURL: URL,
+        to group: ChatGroup,
+        members: [FeiQPeer],
+        completion: @escaping (Result<ChatMessage, Error>) -> Void
+    )
+    func sendGroupFile(
         from fileURL: URL,
         to group: ChatGroup,
         members: [FeiQPeer],
@@ -86,6 +105,7 @@ final class DefaultChatRepository: ChatRepository {
     private let networkService: FeiQNetworkServiceProtocol
     private let historyService: ChatHistoryService
     private let attachmentStorageService: ChatAttachmentStorageService
+    private let screenshotService: ScreenshotCaptureService
     private let notificationService: NotificationService
     private let stateQueue = DispatchQueue(label: "com.feiqmac.chat-repository-state")
     private let attachmentQueue = DispatchQueue(
@@ -102,6 +122,9 @@ final class DefaultChatRepository: ChatRepository {
     private var groupsByID: [String: ChatGroup] = [:]
     // Accessed only on attachmentQueue, like other received packet state.
     private var lastReceivedShakes: [String: Date] = [:]
+    // FeiQ retries the private 0xB0 request when no response is observed.
+    // Keep the UI from presenting the same request repeatedly.
+    private var recentRemoteAssistanceRequests: [String: Date] = [:]
     // Owned by attachmentQueue. Marker and image packets can arrive in either order.
     private struct PendingInlineMessage {
         let id: UUID
@@ -131,6 +154,7 @@ final class DefaultChatRepository: ChatRepository {
         historyService: ChatHistoryService,
         attachmentStorageService: ChatAttachmentStorageService,
         notificationService: NotificationService,
+        screenshotService: ScreenshotCaptureService = MacScreenshotCaptureService(),
         inlineImageTimeout: TimeInterval = 90,
         inlineImageRetention: TimeInterval = 600
     ) {
@@ -140,6 +164,7 @@ final class DefaultChatRepository: ChatRepository {
         self.networkService = networkService
         self.historyService = historyService
         self.attachmentStorageService = attachmentStorageService
+        self.screenshotService = screenshotService
         self.notificationService = notificationService
 
         networkService.onPacket = { [weak self] packet, ipAddress, transport in
@@ -326,6 +351,50 @@ final class DefaultChatRepository: ChatRepository {
         }
     }
 
+    func prepareOutgoingFile(
+        from fileURL: URL,
+        completion: @escaping (Result<ChatAttachment, Error>) -> Void
+    ) {
+        attachmentQueue.async { [self] in
+            do {
+                completion(.success(try attachmentStorageService.prepareOutgoingFile(from: fileURL)))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func sendFile(
+        from fileURL: URL,
+        to peer: FeiQPeer,
+        unreadCount: Int,
+        completion: @escaping (Result<ChatMessage, Error>) -> Void
+    ) {
+        attachmentQueue.async { [self] in
+            do {
+                let attachment = try attachmentStorageService.prepareOutgoingFile(from: fileURL)
+                let localNickname = stateQueue.sync { identity.nickname }
+                let message = ChatMessage(
+                    direction: .outgoing,
+                    text: "",
+                    senderName: localNickname,
+                    recipientName: peer.displayName,
+                    attachments: [attachment]
+                )
+                persistMessage(message, for: peer, unreadCount: unreadCount)
+                networkService.sendFileMessage(
+                    "",
+                    attachments: [attachment],
+                    to: peer.ipAddress,
+                    recipientName: peer.displayName
+                )
+                completion(.success(message))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
     func preparePastedImage(
         data: Data,
         suggestedFileName: String?,
@@ -341,6 +410,12 @@ final class DefaultChatRepository: ChatRepository {
                 completion(.failure(error))
             }
         }
+    }
+
+    func captureScreenshot(
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) {
+        screenshotService.captureInteractive(completion: completion)
     }
 
     func sendGroupImage(
@@ -387,6 +462,58 @@ final class DefaultChatRepository: ChatRepository {
                     emit(.log("群聊「" + group.displayName + "」没有在线成员，图片未发送"))
                 } else {
                     emit(.log("群聊「" + group.displayName + "」已通过 Mac 中继发送图片给 " + String(sentCount) + " 位成员"))
+                }
+                completion(.success(message))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func sendGroupFile(
+        from fileURL: URL,
+        to group: ChatGroup,
+        members: [FeiQPeer],
+        completion: @escaping (Result<ChatMessage, Error>) -> Void
+    ) {
+        attachmentQueue.async { [self] in
+            do {
+                let attachment = try attachmentStorageService.prepareOutgoingFile(from: fileURL)
+                let localNickname = stateQueue.sync { identity.nickname }
+                let message = ChatMessage(
+                    direction: .outgoing,
+                    text: "",
+                    senderName: localNickname,
+                    recipientName: group.displayName,
+                    attachments: [attachment]
+                )
+                persistGroupMessage(message, for: group, unreadCount: 0)
+
+                let relayText = FeiQGroupRelayFormatter.makeText(
+                    groupName: group.displayName,
+                    senderName: localNickname,
+                    text: ""
+                )
+                var sentCount = 0
+                var sentAddresses = Set<String>()
+                for member in members where member.isOnline {
+                    let address = member.ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !address.isEmpty, sentAddresses.insert(address).inserted else {
+                        continue
+                    }
+                    networkService.sendFileMessage(
+                        relayText,
+                        attachments: [attachment],
+                        to: address,
+                        recipientName: group.displayName
+                    )
+                    sentCount += 1
+                }
+
+                if sentCount == 0 {
+                    emit(.log("群聊「" + group.displayName + "」没有在线成员，文件未发送"))
+                } else {
+                    emit(.log("群聊「" + group.displayName + "」已通过 Mac 中继发送文件给 " + String(sentCount) + " 位成员"))
                 }
                 completion(.success(message))
             } catch {
@@ -450,7 +577,7 @@ final class DefaultChatRepository: ChatRepository {
     }
 
     func deleteGroup(_ groupID: String) {
-        stateQueue.sync {
+        _ = stateQueue.sync {
             groupsByID.removeValue(forKey: groupID)
         }
         historyService.deleteGroup(groupID)
@@ -563,6 +690,32 @@ final class DefaultChatRepository: ChatRepository {
         }
 
         switch packet.commandType {
+        case .remoteAssistanceRequest:
+            guard transport == .udp else { return }
+            let now = Date()
+            recentRemoteAssistanceRequests = recentRemoteAssistanceRequests.filter {
+                now.timeIntervalSince($0.value) < 15
+            }
+            let requestKey = [
+                ipAddress,
+                packet.senderName,
+                packet.senderHost,
+                packet.additionalData.base64EncodedString()
+            ].joined(separator: "/")
+            guard recentRemoteAssistanceRequests[requestKey] == nil else { return }
+            recentRemoteAssistanceRequests[requestKey] = now
+
+            let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
+            emit(.peerUpdated(peer))
+            emit(.remoteAssistanceRequested(FeiQRemoteAssistanceRequest(
+                id: requestKey,
+                peer: peer,
+                packetNumber: packet.packetNumber,
+                versionIdentifier: packet.versionIdentifier,
+                payload: packet.additionalText,
+                receivedAt: now
+            )))
+
         case .shake:
             guard transport == .udp else { return }
             let now = Date()
@@ -651,15 +804,15 @@ final class DefaultChatRepository: ChatRepository {
                 }
                 return
             }
-            let remoteImages = packet.fileAttachments.filter(\.isImage)
-            guard !text.isEmpty || !remoteImages.isEmpty else {
+            let remoteAttachments = packet.fileAttachments
+            guard !text.isEmpty || !remoteAttachments.isEmpty else {
                 if packet.hasFileAttachments {
-                    emit(.log("收到文件附件，但当前仅支持图片格式"))
+                    emit(.log("收到文件附件，但附件清单为空或格式无效"))
                 }
                 return
             }
 
-            if remoteImages.isEmpty {
+            if remoteAttachments.isEmpty {
                 let incomingMessage = ChatMessage(
                     direction: .incoming,
                     text: text,
@@ -670,8 +823,8 @@ final class DefaultChatRepository: ChatRepository {
                 return
             }
 
-            downloadIncomingImages(
-                remoteImages,
+            downloadIncomingFiles(
+                remoteAttachments,
                 packetNumber: packet.packetNumber,
                 from: ipAddress
             ) { [weak self] result in
@@ -679,10 +832,13 @@ final class DefaultChatRepository: ChatRepository {
 
                 switch result {
                 case .success(let downloaded):
+                    let failureUnit = remoteAttachments.allSatisfy(\.isImage)
+                        ? "张图片"
+                        : "个文件"
                     let incomingMessage = ChatMessage(
                         direction: .incoming,
                         text: text + (downloaded.failedCount > 0
-                            ? "\n[\(downloaded.failedCount) 张图片接收失败，请对方重新发送]" : ""),
+                            ? "\n[\(downloaded.failedCount) \(failureUnit)接收失败，请对方重新发送]" : ""),
                         senderName: peer.displayName,
                         recipientName: currentIdentity.nickname,
                         attachments: downloaded.attachments
@@ -690,10 +846,13 @@ final class DefaultChatRepository: ChatRepository {
                     self.deliverIncomingMessage(incomingMessage, from: peer)
 
                 case .failure(let error):
-                    self.emit(.log("图片接收失败：\(error.localizedDescription)"))
+                    self.emit(.log("文件接收失败：\(error.localizedDescription)"))
+                    let failureDescription = remoteAttachments.allSatisfy(\.isImage)
+                        ? "图片接收失败"
+                        : "文件接收失败"
                     let textMessage = ChatMessage(
                         direction: .incoming,
-                        text: text + (text.isEmpty ? "" : "\n") + "[图片接收失败，请对方重新发送]",
+                        text: text + (text.isEmpty ? "" : "\n") + "[\(failureDescription)，请对方重新发送]",
                         senderName: peer.displayName,
                         recipientName: currentIdentity.nickname
                     )
@@ -713,64 +872,85 @@ final class DefaultChatRepository: ChatRepository {
         _ = transport
     }
 
-    private func downloadIncomingImages(
-        _ remoteImages: [FeiQFileAttachment],
+    private func downloadIncomingFiles(
+        _ remoteAttachments: [FeiQFileAttachment],
         packetNumber: UInt64,
         from ipAddress: String,
         completion: @escaping (Result<(attachments: [ChatAttachment], failedCount: Int), Error>) -> Void
     ) {
-        do {
-            let preparedAttachments = try remoteImages.map {
-                (
-                    remote: $0,
-                    local: try attachmentStorageService.prepareIncomingImage(for: $0)
-                )
-            }
-            let group = DispatchGroup()
-            let resultLock = NSLock()
-            var downloaded = Array<ChatAttachment?>(repeating: nil, count: preparedAttachments.count)
-            var firstError: Error?
+        var preparedAttachments: [(remote: FeiQFileAttachment, local: ChatAttachment)] = []
+        var preparationFailureCount = 0
+        var preparationError: Error?
 
-            for (index, prepared) in preparedAttachments.enumerated() {
-                group.enter()
-                networkService.downloadFile(
-                    prepared.remote,
-                    packetNumber: packetNumber,
-                    from: ipAddress,
-                    to: prepared.local.localURL
-                ) { result in
-                    resultLock.lock()
-                    defer {
-                        resultLock.unlock()
-                        group.leave()
-                    }
-
-                    switch result {
-                    case .success:
-                        downloaded[index] = prepared.local
-                    case .failure(let error):
-                        firstError = firstError ?? error
-                    }
-                }
+        for remote in remoteAttachments {
+            guard remote.isRegularFile else {
+                preparationFailureCount += 1
+                self.emit(.log("跳过不支持的附件：\(remote.fileName)"))
+                continue
             }
 
-            group.notify(queue: attachmentQueue) {
+            do {
+                let local = try remote.isImage
+                    ? attachmentStorageService.prepareIncomingImage(for: remote)
+                    : attachmentStorageService.prepareIncomingFile(for: remote)
+                preparedAttachments.append((remote: remote, local: local))
+            } catch {
+                preparationFailureCount += 1
+                preparationError = preparationError ?? error
+                self.emit(.log("附件准备失败 \(remote.fileName)：\(error.localizedDescription)"))
+            }
+        }
+
+        guard !preparedAttachments.isEmpty else {
+            if remoteAttachments.isEmpty {
+                completion(.success(([], preparationFailureCount)))
+            } else {
+                completion(.success(([], max(1, preparationFailureCount))))
+            }
+            return
+        }
+
+        let group = DispatchGroup()
+        let resultLock = NSLock()
+        var downloaded = Array<ChatAttachment?>(repeating: nil, count: preparedAttachments.count)
+        var firstError: Error? = preparationError
+
+        for (index, prepared) in preparedAttachments.enumerated() {
+            group.enter()
+            networkService.downloadFile(
+                prepared.remote,
+                packetNumber: packetNumber,
+                from: ipAddress,
+                to: prepared.local.localURL
+            ) { result in
                 resultLock.lock()
-                let error = firstError
-                let attachments = downloaded.compactMap { $0 }
-                resultLock.unlock()
+                defer {
+                    resultLock.unlock()
+                    group.leave()
+                }
 
-                if let error, attachments.isEmpty {
-                    completion(.failure(error))
-                } else {
-                    if let error {
-                        self.emit(.log("部分图片附件下载失败，保留已完成图片：\(error.localizedDescription)"))
-                    }
-                    completion(.success((attachments, preparedAttachments.count - attachments.count)))
+                switch result {
+                case .success:
+                    downloaded[index] = prepared.local
+                case .failure(let error):
+                    firstError = firstError ?? error
                 }
             }
-        } catch {
-            completion(.failure(error))
+        }
+
+        group.notify(queue: attachmentQueue) {
+            resultLock.lock()
+            let error = firstError
+            let attachments = downloaded.compactMap { $0 }
+            resultLock.unlock()
+
+            let failedCount = preparationFailureCount + preparedAttachments.count - attachments.count
+            if let error, attachments.isEmpty, failedCount > 0 {
+                self.emit(.log("文件附件下载失败：\(error.localizedDescription)"))
+            } else if let error {
+                self.emit(.log("部分文件附件下载失败，保留已完成文件：\(error.localizedDescription)"))
+            }
+            completion(.success((attachments, failedCount)))
         }
     }
 
@@ -895,15 +1075,10 @@ final class DefaultChatRepository: ChatRepository {
             text: message.text
         )
         let sourceAddress = sourcePeer.ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-        let relayAttachments: [ChatAttachment]
-        do {
-            relayAttachments = try message.attachments.map {
-                $0.mimeType == "image/jpeg" ? $0 : try attachmentStorageService.prepareOutgoingImage(from: $0.localURL)
-            }
-        } catch {
-            emit(.log("群聊图片转换失败：\(error.localizedDescription)"))
-            return
-        }
+        // Keep the attachment kind intact while relaying. Images received via
+        // the private inline protocol remain inline images; normal files keep
+        // their TCP attachment metadata and can be downloaded by every member.
+        let relayAttachments = message.attachments
         var sentAddresses = Set<String>()
         var sentCount = 0
 
@@ -935,7 +1110,9 @@ final class DefaultChatRepository: ChatRepository {
         if sentCount == 0 {
             emit(.log("群聊「" + group.displayName + "」收到「" + message.senderName + "」的消息，但没有其他在线成员可中继"))
         } else {
-            let contentType = message.attachments.isEmpty ? "消息" : "图片"
+            let contentType = message.attachments.isEmpty
+                ? "消息"
+                : (message.attachments.allSatisfy { $0.kind == .image } ? "图片" : "文件")
             emit(.log("群聊「" + group.displayName + "」已将「" + message.senderName + "」的" + contentType + "中继给 " + String(sentCount) + " 位成员"))
         }
     }

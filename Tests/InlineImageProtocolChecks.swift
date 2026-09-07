@@ -86,6 +86,15 @@ enum InlineImageProtocolChecks {
         check(winShake.commandType == .shake && !winShake.isFeiQPresencePacket, "Windows shake is not presence")
         check(FeiQPacket.parse(shakeAck.encoded())?.commandType == .shakeAcknowledgement, "ACK is not another shake")
         check(FeiQCommand.from(rawValue: 0x002000D1) == .shake, "shake with upper command flags")
+        check(FeiQCommand.from(rawValue: 0x000000B0) == .remoteAssistanceRequest, "remote assistance command")
+        let remoteRequest = FeiQPacket(
+            packetNumber: 131, senderName: "Administrator", senderHost: "PC-20250824UZVY",
+            command: .remoteAssistanceRequest
+        )
+        check(
+            FeiQPacket.parse(remoteRequest.encoded())?.commandType == .remoteAssistanceRequest,
+            "parse remote assistance request"
+        )
 
         let typing = FeiQPacket.parse(Data("1_lbt6_0#128#DEVICE#0#0#0#4001#9:126:Win:PC:121:\0".utf8))!
         let typingEnded = FeiQPacket.parse(Data("1_lbt6_0#128#DEVICE#0#0#0#4001#9:127:Win:PC:122:\0".utf8))!
@@ -109,6 +118,22 @@ enum InlineImageProtocolChecks {
 
         let files = FeiQAttachmentCodec.decode(from: Data("\0".utf8) + Data("10:photo.jpg:100:12345678:1:\u{7}".utf8), preferUTF8: false)
         check(files.first?.fileSize == 256 && files.first?.fileID == "10", "hex size, decimal file ID")
+        let colonFile = FeiQFileAttachment(
+            fileID: "11",
+            fileName: "报告:最终版.pdf",
+            fileSize: 12,
+            modifiedAt: 1,
+            fileAttributes: 1
+        )
+        let colonRoundTrip = FeiQAttachmentCodec.decode(
+            from: FeiQAttachmentCodec.encode(
+                message: "附件",
+                attachments: [colonFile],
+                preferUTF8: false
+            ),
+            preferUTF8: false
+        )
+        check(colonRoundTrip.first?.fileName == colonFile.fileName, "escaped colon in file name")
         let markerPacket = FeiQPacket.parse(Data("1:125:Win:PC:288:/~#>e8fdb8e6<B~\0".utf8))!
         check(markerPacket.additionalText == "/~#>e8fdb8e6<B~", "text packet still strips terminator")
 

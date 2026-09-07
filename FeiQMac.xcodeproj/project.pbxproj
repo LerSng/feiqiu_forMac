@@ -7,7 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C30000000000000000000001 /* WindowShakeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000002 /* WindowShakeView.swift */; };
+		C50000000000000000000001 /* RemoteAssistanceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50000000000000000000002 /* RemoteAssistanceView.swift */; };
+		C40000000000000000000001 /* ChatHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C40000000000000000000002 /* ChatHeaderView.swift */; };
+        C30000000000000000000001 /* WindowShakeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000002 /* WindowShakeView.swift */; };
 		105AA750304B9EE900FBDB2F /* app.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 105AA74F304B9EE900FBDB2F /* app.xcassets */; };
 		A10000000000000000000020 /* FeiQMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000030 /* FeiQMacApp.swift */; };
 		A10000000000000000000021 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000031 /* ContentView.swift */; };
@@ -36,10 +38,14 @@
 		A1000000000000000000006E /* ChatAttachmentStorageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000007E /* ChatAttachmentStorageService.swift */; };
 		B20000000000000000000001 /* FeiQInlineImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* FeiQInlineImage.swift */; };
 		B20000000000000000000003 /* PasteAwareTextEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* PasteAwareTextEditor.swift */; };
+		D10000000000000000000001 /* FilePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000002 /* FilePreviewView.swift */; };
+		D20000000000000000000001 /* ScreenshotCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000002 /* ScreenshotCaptureService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		C30000000000000000000002 /* WindowShakeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowShakeView.swift; sourceTree = "<group>"; };
+		C50000000000000000000002 /* RemoteAssistanceView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = RemoteAssistanceView.swift; sourceTree = "<group>"; };
+		C40000000000000000000002 /* ChatHeaderView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatHeaderView.swift; sourceTree = "<group>"; };
+        C30000000000000000000002 /* WindowShakeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowShakeView.swift; sourceTree = "<group>"; };
 		105AA74F304B9EE900FBDB2F /* app.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = app.xcassets; sourceTree = "<group>"; };
 		A10000000000000000000030 /* FeiQMacApp.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FeiQMacApp.swift; sourceTree = "<group>"; };
 		A10000000000000000000031 /* ContentView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -70,6 +76,8 @@
 		A1000000000000000000007E /* ChatAttachmentStorageService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatAttachmentStorageService.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* FeiQInlineImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeiQInlineImage.swift; sourceTree = "<group>"; };
 		B20000000000000000000004 /* PasteAwareTextEditor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PasteAwareTextEditor.swift; sourceTree = "<group>"; };
+		D10000000000000000000002 /* FilePreviewView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
+		D20000000000000000000002 /* ScreenshotCaptureService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ScreenshotCaptureService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -175,8 +183,11 @@
 				A1000000000000000000007B /* GroupEditorView.swift */,
 				A1000000000000000000007C /* SettingsView.swift */,
 				A1000000000000000000007D /* CommonViews.swift */,
+				C40000000000000000000002 /* ChatHeaderView.swift */,
+				C50000000000000000000002 /* RemoteAssistanceView.swift */,
 				C30000000000000000000002 /* WindowShakeView.swift */,
 				B20000000000000000000004 /* PasteAwareTextEditor.swift */,
+				D10000000000000000000002 /* FilePreviewView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -213,6 +224,7 @@
 				A10000000000000000000074 /* FeiQNotificationService.swift */,
 				A10000000000000000000075 /* UserDefaultsSettingsService.swift */,
 				A1000000000000000000007E /* ChatAttachmentStorageService.swift */,
+				D20000000000000000000002 /* ScreenshotCaptureService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -333,8 +345,12 @@
 				A1000000000000000000006B /* GroupEditorView.swift in Sources */,
 				A1000000000000000000006C /* SettingsView.swift in Sources */,
 				A1000000000000000000006D /* CommonViews.swift in Sources */,
+				C40000000000000000000001 /* ChatHeaderView.swift in Sources */,
+				C50000000000000000000001 /* RemoteAssistanceView.swift in Sources */,
 				C30000000000000000000001 /* WindowShakeView.swift in Sources */,
 				B20000000000000000000003 /* PasteAwareTextEditor.swift in Sources */,
+				D10000000000000000000001 /* FilePreviewView.swift in Sources */,
+				D20000000000000000000001 /* ScreenshotCaptureService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

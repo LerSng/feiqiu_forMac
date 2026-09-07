@@ -23,6 +23,9 @@ enum FeiQCommand: UInt32, Sendable {
     /// FeiQ private typing notification commands used by FeiQ 2013.
     case inputting = 0x00000079
     case inputEnd = 0x0000007A
+    /// FeiQ 2013 private remote-assistance request observed in the wild.
+    /// The follow-up control/video channel is not part of public IPMsg.
+    case remoteAssistanceRequest = 0x000000B0
     case shake = 0x000000D1
     case shakeAcknowledgement = 0x000000D2
     /// Some FeiQ 2013 builds use the private 0x77/0x78 pair for inline
@@ -58,6 +61,7 @@ enum FeiQCommand: UInt32, Sendable {
         case getDirectoryFiles.rawValue: return .getDirectoryFiles
         case inputting.rawValue: return .inputting
         case inputEnd.rawValue: return .inputEnd
+        case remoteAssistanceRequest.rawValue: return .remoteAssistanceRequest
         case shake.rawValue: return .shake
         case shakeAcknowledgement.rawValue: return .shakeAcknowledgement
         case legacyInlineImage.rawValue: return .legacyInlineImage
@@ -332,7 +336,7 @@ enum FeiQAttachmentCodec {
         for attachment in attachments {
             let fields = [
                 attachment.fileID,
-                attachment.fileName,
+                escapeFileName(attachment.fileName),
                 String(attachment.fileSize, radix: 16),
                 String(attachment.modifiedAt, radix: 16),
                 String(attachment.fileAttributes, radix: 16)
@@ -416,9 +420,8 @@ enum FeiQAttachmentCodec {
         _ data: Data,
         preferUTF8: Bool
     ) -> FeiQFileAttachment? {
-        let fields = data
-            .split(separator: 58, omittingEmptySubsequences: false)
-            .map { GBKCodec.decode(Data($0), preferUTF8: preferUTF8) }
+        let fields = splitFields(data)
+            .map { GBKCodec.decode($0, preferUTF8: preferUTF8) }
         guard fields.count >= 5,
               !fields[0].isEmpty,
               !fields[1].isEmpty,
@@ -436,6 +439,37 @@ enum FeiQAttachmentCodec {
             modifiedAt: modifiedAt,
             fileAttributes: fileAttributes
         )
+    }
+
+    private static func escapeFileName(_ fileName: String) -> String {
+        fileName.replacingOccurrences(of: ":", with: "::")
+    }
+
+    /// Splits a metadata record while preserving the IPMsg `::` filename
+    /// escape. `Data.split(separator:)` cannot distinguish an escaped colon
+    /// from a field separator and corrupts names such as `报告:最终版.pdf`.
+    private static func splitFields(_ data: Data) -> [Data] {
+        var fields: [Data] = []
+        var field = Data()
+        var index = 0
+
+        while index < data.count {
+            let byte = data[index]
+            if byte == 58 {
+                if index + 1 < data.count, data[index + 1] == 58 {
+                    field.append(58)
+                    index += 2
+                    continue
+                }
+                fields.append(field)
+                field.removeAll(keepingCapacity: true)
+            } else {
+                field.append(byte)
+            }
+            index += 1
+        }
+        fields.append(field)
+        return fields
     }
 
     private static func parseUInt32(_ value: String) -> UInt32? {

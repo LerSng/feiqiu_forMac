@@ -51,5 +51,9 @@ struct ContentView: View {
             GroupEditorView()
                 .environmentObject(model)
         }
+        .sheet(item: $model.remoteAssistanceRequest) { request in
+            RemoteAssistanceRequestView(request: request)
+                .environmentObject(model)
+        }
     }
 }

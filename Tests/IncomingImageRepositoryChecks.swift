@@ -154,6 +154,36 @@ enum IncomingImageRepositoryChecks {
         precondition(partialMessage.attachments.count == 1 && partialMessage.attachments[0].isAvailable,
                      "partial file transfer preserves valid image and reports failure")
 
+        // A non-image attachment follows the same UDP metadata + TCP stream
+        // path but must be persisted as a file and not rendered as an image.
+        transport.downloadData = Data("hello".utf8)
+        let regularDescriptor = FeiQFileAttachment(
+            fileID: "1",
+            fileName: "notes.txt",
+            fileSize: 5,
+            modifiedAt: 1,
+            fileAttributes: 1
+        )
+        let regularPacket = FeiQPacket(
+            packetNumber: 504,
+            senderName: "Win",
+            senderHost: "PC",
+            command: FeiQCommand.sendMessage.rawValue | FeiQPacket.fileAttachOption,
+            additionalData: FeiQAttachmentCodec.encode(
+                message: "普通文件",
+                attachments: [regularDescriptor],
+                preferUTF8: false
+            )
+        )
+        transport.onPacket?(regularPacket, ip, .udp)
+        let regularMessage = events.waitFor {
+            $0.text == "普通文件" && $0.attachments.count == 1
+        }
+        precondition(regularMessage.attachments[0].kind == .file,
+                     "regular attachment is not treated as an image")
+        precondition(regularMessage.attachments[0].isAvailable,
+                     "regular attachment is saved locally")
+
         let broken = FeiQPacket(packetNumber: 502, senderName: "Win", senderHost: "PC",
                                 command: .sendMessage, additionalText: "/~#>aabbccdd<B~")
         transport.onPacket?(broken, ip, .udp)

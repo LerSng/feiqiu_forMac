@@ -51,65 +51,30 @@ struct SidebarView: View {
                 }
                 .padding(10)
                 .background(FeiQUI.cardBackground.opacity(0.75), in: RoundedRectangle(cornerRadius: 10))
-                Picker("会话筛选", selection: $filter) {
+                Picker("会话筛选", selection: filterSelection) {
                     ForEach(ConversationFilter.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .accessibilityLabel("会话筛选")
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 12)
 
             ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    if peers.isEmpty && groups.isEmpty {
-                        emptyState
-                    } else {
-                        let online = peers.filter(\.isOnline)
-                        if !online.isEmpty {
-                            sectionTitle("在线", count: online.count)
-                            ForEach(online) { peerRow($0) }
-                        }
-                        if !groups.isEmpty {
-                            sectionTitle("群聊", count: groups.count)
-                                .padding(.top, online.isEmpty ? 0 : 12)
-                            ForEach(groups) { group in
-                                ConversationRow(
-                                    title: group.displayName, subtitle: "\(group.memberCount) 位成员",
-                                    unreadCount: model.unreadCount(for: group.id),
-                                    isSelected: model.selectedGroupID == group.id
-                                ) {
-                                    GroupAvatar(size: 42)
-                                } action: {
-                                    model.selectGroup(group.id)
-                                }
-                                .contextMenu {
-                                    Button("群聊设置") { model.openGroupEditor(for: group.id) }
-                                    Button("删除群聊", role: .destructive) { model.deleteGroup(group.id) }
-                                }
-                            }
-                        }
-                        let offline = peers.filter { !$0.isOnline }
-                        if !offline.isEmpty {
-                            if filter == .unread || !model.searchText.isEmpty {
-                                sectionTitle("离线", count: offline.count).padding(.top, 12)
-                                ForEach(offline) { peerRow($0) }
-                            } else {
-                                DisclosureGroup(isExpanded: $showsOffline) {
-                                    ForEach(offline) { peerRow($0) }
-                                } label: {
-                                    Text("离线联系人 · \(offline.count)")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.top, 16)
-                            }
-                        }
-                    }
+                ZStack(alignment: .top) {
+                    conversationPage
+                        .id(filter)
+                        .transition(.asymmetric(
+                            insertion: .opacity
+                                .combined(with: .offset(x: 12, y: 0))
+                                .combined(with: .scale(scale: 0.985)),
+                            removal: .opacity
+                                .combined(with: .offset(x: -12, y: 0))
+                        ))
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 16)
+                .frame(maxWidth: .infinity, alignment: .top)
+                .animation(.snappy(duration: 0.28, extraBounce: 0.02), value: filter)
             }
             .hiddenScrollIndicators()
 
@@ -131,6 +96,72 @@ struct SidebarView: View {
             if filter == .groups { filter = .all }
             if let peer = model.selectedPeer, !peer.isOnline { showsOffline = true }
         }
+    }
+
+    private var filterSelection: Binding<ConversationFilter> {
+        Binding(
+            get: { filter },
+            set: { newFilter in
+                guard newFilter != filter else { return }
+                withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+                    filter = newFilter
+                    showsOffline = false
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var conversationPage: some View {
+        LazyVStack(alignment: .leading, spacing: 4) {
+            if peers.isEmpty && groups.isEmpty {
+                emptyState
+            } else {
+                let online = peers.filter(\.isOnline)
+                if !online.isEmpty {
+                    sectionTitle("在线", count: online.count)
+                    ForEach(online) { peerRow($0) }
+                }
+                if !groups.isEmpty {
+                    sectionTitle("群聊", count: groups.count)
+                        .padding(.top, online.isEmpty ? 0 : 12)
+                    ForEach(groups) { group in
+                        ConversationRow(
+                            title: group.displayName, subtitle: "\(group.memberCount) 位成员",
+                            unreadCount: model.unreadCount(for: group.id),
+                            isSelected: model.selectedGroupID == group.id
+                        ) {
+                            GroupAvatar(size: 42)
+                        } action: {
+                            model.selectGroup(group.id)
+                        }
+                        .contextMenu {
+                            Button("群聊设置") { model.openGroupEditor(for: group.id) }
+                            Button("删除群聊", role: .destructive) { model.deleteGroup(group.id) }
+                        }
+                    }
+                }
+                let offline = peers.filter { !$0.isOnline }
+                if !offline.isEmpty {
+                    if filter == .unread || !model.searchText.isEmpty {
+                        sectionTitle("离线", count: offline.count).padding(.top, 12)
+                        ForEach(offline) { peerRow($0) }
+                    } else {
+                        DisclosureGroup(isExpanded: $showsOffline) {
+                            ForEach(offline) { peerRow($0) }
+                        } label: {
+                            Text("离线联系人 · \(offline.count)")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.top, 16)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 16)
     }
 
     private var profileHeader: some View {

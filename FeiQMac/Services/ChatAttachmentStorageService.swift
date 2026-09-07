@@ -2,7 +2,7 @@
 //  ChatAttachmentStorageService.swift
 //  FeiQMac
 //
-//  负责图片附件的本地导入、接收落盘和文件元数据管理。
+//  负责图片与普通文件附件的本地导入、接收落盘和文件元数据管理。
 //
 
 import Foundation
@@ -14,12 +14,15 @@ protocol ChatAttachmentStorageService: AnyObject {
 
     func prepareOutgoingImage(from sourceURL: URL) throws -> ChatAttachment
     func prepareOutgoingImage(from data: Data, suggestedFileName: String?) throws -> ChatAttachment
+    func prepareOutgoingFile(from sourceURL: URL) throws -> ChatAttachment
     func prepareIncomingImage(for descriptor: FeiQFileAttachment) throws -> ChatAttachment
+    func prepareIncomingFile(for descriptor: FeiQFileAttachment) throws -> ChatAttachment
     func saveInlineImage(_ data: Data, imageID: String, isBitmap: Bool) throws -> ChatAttachment
 }
 
 enum ChatAttachmentStorageError: LocalizedError {
     case unsupportedImage
+    case unsupportedFile
     case sourceFileUnavailable
     case invalidFileSize
     case copyFailed(String)
@@ -28,35 +31,52 @@ enum ChatAttachmentStorageError: LocalizedError {
         switch self {
         case .unsupportedImage:
             return "只支持发送图片文件"
+        case .unsupportedFile:
+            return "不支持发送文件夹或特殊文件"
         case .sourceFileUnavailable:
-            return "无法读取图片文件"
+            return "无法读取附件文件"
         case .invalidFileSize:
-            return "图片为空或超过 20 MB 限制"
+            return "附件为空或超过 2 GB 限制"
         case .copyFailed(let message):
-            return "图片保存失败：\(message)"
+            return "附件保存失败：\(message)"
         }
     }
 }
 
 final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
     private static let regularFileAttribute: UInt32 = 0x00000001
+    /// TCP transfer is streamed, so ordinary files do not need to fit in RAM.
+    /// The limit still protects the local Documents directory from accidental
+    /// selection of a disk image or an unbounded special file.
+    static let maximumFileBytes: Int64 = 2 * 1024 * 1024 * 1024
 
     private let fileManager: FileManager
+    private let rootDirectoryURL: URL
     private let imagesDirectoryURL: URL
+    private let filesDirectoryURL: URL
 
     var locationDescription: String {
-        imagesDirectoryURL.path
+        rootDirectoryURL.path
     }
 
     init(rootURL: URL, fileManager: FileManager = .default) {
         self.fileManager = fileManager
+        self.rootDirectoryURL = rootURL
         self.imagesDirectoryURL = rootURL.appendingPathComponent(
             "Images",
+            isDirectory: true
+        )
+        self.filesDirectoryURL = rootURL.appendingPathComponent(
+            "Files",
             isDirectory: true
         )
 
         try? fileManager.createDirectory(
             at: imagesDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        try? fileManager.createDirectory(
+            at: filesDirectoryURL,
             withIntermediateDirectories: true
         )
     }
@@ -121,6 +141,63 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
         )
     }
 
+    func prepareOutgoingFile(from sourceURL: URL) throws -> ChatAttachment {
+        let didStartAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let values: URLResourceValues
+        do {
+            values = try sourceURL.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .fileSizeKey,
+                .contentModificationDateKey
+            ])
+        } catch {
+            throw ChatAttachmentStorageError.sourceFileUnavailable
+        }
+
+        guard values.isRegularFile == true else {
+            throw ChatAttachmentStorageError.unsupportedFile
+        }
+        guard let fileSize = values.fileSize,
+              Int64(fileSize) >= 0,
+              Int64(fileSize) <= Self.maximumFileBytes else {
+            throw ChatAttachmentStorageError.invalidFileSize
+        }
+
+        let originalName = Self.safeFileName(sourceURL.lastPathComponent)
+        let fileName = originalName.isEmpty ? "未命名文件" : originalName
+        let destinationURL = filesDirectoryURL.appendingPathComponent(
+            "\(UUID().uuidString)_\(fileName)",
+            isDirectory: false
+        )
+
+        do {
+            try fileManager.copyItem(at: sourceURL, to: destinationURL)
+        } catch {
+            throw ChatAttachmentStorageError.copyFailed(error.localizedDescription)
+        }
+
+        let descriptor = FeiQFileAttachment(
+            fileID: Self.makeFileID(),
+            fileName: fileName,
+            fileSize: Int64(fileSize),
+            modifiedAt: Int64((values.contentModificationDate ?? Date()).timeIntervalSince1970),
+            fileAttributes: Self.regularFileAttribute
+        )
+
+        return ChatAttachment(
+            descriptor: descriptor,
+            localPath: destinationURL.path,
+            mimeType: Self.mimeType(for: fileName),
+            kind: .file
+        )
+    }
+
     private func makeOutgoingImage(
         data: Data,
         suggestedFileName: String,
@@ -143,7 +220,7 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
         }
 
         let descriptor = FeiQFileAttachment(
-            fileID: String(UInt32.random(in: 1...UInt32.max)),
+            fileID: Self.makeFileID(),
             fileName: fileName,
             fileSize: Int64(jpeg.count),
             modifiedAt: Int64(modifiedAt.timeIntervalSince1970),
@@ -158,30 +235,64 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
     }
 
     func prepareIncomingImage(for descriptor: FeiQFileAttachment) throws -> ChatAttachment {
-        guard descriptor.isImage else {
+        guard descriptor.isImage, descriptor.isRegularFile else {
             throw ChatAttachmentStorageError.unsupportedImage
         }
-        guard descriptor.fileSize > 0, descriptor.fileSize <= FeiQInlineImageCodec.maximumBytes else {
+        guard descriptor.fileSize >= 0,
+              descriptor.fileSize <= Self.maximumFileBytes else {
             throw ChatAttachmentStorageError.invalidFileSize
         }
 
-        let fileName = Self.safeFileName(descriptor.fileName)
-        let destinationURL = imagesDirectoryURL.appendingPathComponent(
-            "\(UUID().uuidString)_\(fileName)",
-            isDirectory: false
-        )
-        let type = Self.imageType(for: URL(fileURLWithPath: fileName))
-
-        return ChatAttachment(
+        return makeIncomingAttachment(
             descriptor: descriptor,
-            localPath: destinationURL.path,
-            mimeType: type?.preferredMIMEType ?? "application/octet-stream"
+            directoryURL: imagesDirectoryURL,
+            kind: .image
+        )
+    }
+
+    func prepareIncomingFile(for descriptor: FeiQFileAttachment) throws -> ChatAttachment {
+        guard descriptor.isRegularFile else {
+            throw ChatAttachmentStorageError.unsupportedFile
+        }
+        guard descriptor.fileSize >= 0,
+              descriptor.fileSize <= Self.maximumFileBytes else {
+            throw ChatAttachmentStorageError.invalidFileSize
+        }
+
+        return makeIncomingAttachment(
+            descriptor: descriptor,
+            directoryURL: filesDirectoryURL,
+            kind: .file
         )
     }
 
     private static func imageType(for url: URL) -> UTType? {
         guard !url.pathExtension.isEmpty else { return nil }
         return UTType(filenameExtension: url.pathExtension)
+    }
+
+    private static func mimeType(for fileName: String) -> String {
+        imageType(for: URL(fileURLWithPath: fileName))?.preferredMIMEType
+            ?? "application/octet-stream"
+    }
+
+    private func makeIncomingAttachment(
+        descriptor: FeiQFileAttachment,
+        directoryURL: URL,
+        kind: ChatAttachmentKind
+    ) -> ChatAttachment {
+        let fileName = Self.safeFileName(descriptor.fileName)
+        let destinationURL = directoryURL.appendingPathComponent(
+            "\(UUID().uuidString)_\(fileName)",
+            isDirectory: false
+        )
+
+        return ChatAttachment(
+            descriptor: descriptor,
+            localPath: destinationURL.path,
+            mimeType: Self.mimeType(for: fileName),
+            kind: kind
+        )
     }
 
     func saveInlineImage(_ data: Data, imageID: String, isBitmap: Bool) throws -> ChatAttachment {
@@ -266,8 +377,14 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
         let baseName = URL(fileURLWithPath: fileName).lastPathComponent
         let sanitized = baseName
             .replacingOccurrences(of: ":", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
             .replacingOccurrences(of: "\0", with: "_")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return sanitized.isEmpty ? "image" : sanitized
+        return sanitized.isEmpty ? "file" : sanitized
+    }
+
+    private static func makeFileID() -> String {
+        String(UInt32.random(in: 1...UInt32.max))
     }
 }

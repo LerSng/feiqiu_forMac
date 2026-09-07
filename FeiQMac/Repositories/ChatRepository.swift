@@ -84,6 +84,11 @@ protocol ChatRepository: AnyObject {
         attachmentID: String, messageID: UUID, conversationID: String,
         completion: @escaping (Result<ChatMessage, Error>) -> Void
     )
+    func deleteMessage(
+        _ message: ChatMessage,
+        conversationID: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    )
     func deleteDraftImage(_ attachment: ChatAttachment, completion: @escaping (Result<Void, Error>) -> Void)
     func restorePeers(_ peers: [FeiQPeer])
     func restoreGroups(_ groups: [ChatGroup])
@@ -401,6 +406,34 @@ final class DefaultChatRepository: ChatRepository {
     func deleteDraftImage(_ attachment: ChatAttachment, completion: @escaping (Result<Void, Error>) -> Void) {
         attachmentQueue.async { [attachmentStorageService] in
             completion(Result { try attachmentStorageService.deleteManagedImage(attachment) })
+        }
+    }
+
+    func deleteMessage(
+        _ message: ChatMessage,
+        conversationID: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        historyService.deleteMessage(
+            id: message.id,
+            conversationID: conversationID
+        ) { [weak self] result in
+            guard let self else { return }
+            self.attachmentQueue.async {
+                switch result {
+                case .success(let attachments):
+                    for attachment in attachments {
+                        do {
+                            try self.attachmentStorageService.deleteManagedAttachment(attachment)
+                        } catch {
+                            self.emit(.log("删除消息附件失败：\(attachment.fileName) · \(error.localizedDescription)"))
+                        }
+                    }
+                    completion(.success(()))
+                case .failure(let error):
+                    completion(.failure(error))
+                }
+            }
         }
     }
 

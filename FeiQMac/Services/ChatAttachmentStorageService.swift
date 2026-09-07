@@ -19,6 +19,7 @@ protocol ChatAttachmentStorageService: AnyObject {
     func prepareIncomingFile(for descriptor: FeiQFileAttachment) throws -> ChatAttachment
     func saveInlineImage(_ data: Data, imageID: String, isBitmap: Bool) throws -> ChatAttachment
     func deleteManagedImage(_ attachment: ChatAttachment) throws
+    func deleteManagedAttachment(_ attachment: ChatAttachment) throws
 }
 
 enum ChatAttachmentStorageError: LocalizedError {
@@ -98,12 +99,18 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
     }
 
     func deleteManagedImage(_ attachment: ChatAttachment) throws {
+        guard attachment.isImage else {
+            throw ChatAttachmentStorageError.unsafeDeletion
+        }
+        try deleteManagedAttachment(attachment)
+    }
+
+    func deleteManagedAttachment(_ attachment: ChatAttachment) throws {
         let target = attachment.localURL.standardizedFileURL.resolvingSymlinksInPath()
         let allowedDirectories = [imagesDirectoryURL, filesDirectoryURL].map {
             $0.standardizedFileURL.resolvingSymlinksInPath()
         }
-        guard attachment.isImage,
-              allowedDirectories.contains(target.deletingLastPathComponent()) else {
+        guard allowedDirectories.contains(target.deletingLastPathComponent()) else {
             throw ChatAttachmentStorageError.unsafeDeletion
         }
         guard fileManager.fileExists(atPath: target.path) else { return }

@@ -66,6 +66,7 @@ struct ChatDetailView: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .background(FeiQUI.chatBackground)
+        .animation(.easeInOut(duration: 0.22), value: model.selectedConversationID)
         .alert("图片删除失败", isPresented: Binding(
             get: { model.imageDeletionError != nil },
             set: { if !$0 { model.imageDeletionError = nil } }
@@ -73,6 +74,22 @@ struct ChatDetailView: View {
             Button("好", role: .cancel) { model.imageDeletionError = nil }
         } message: {
             Text(model.imageDeletionError ?? "")
+        }
+        .alert("照片未添加", isPresented: Binding(
+            get: { model.imageSelectionError != nil },
+            set: { if !$0 { model.imageSelectionError = nil } }
+        )) {
+            Button("好", role: .cancel) { model.imageSelectionError = nil }
+        } message: {
+            Text(model.imageSelectionError ?? "")
+        }
+        .alert("消息删除失败", isPresented: Binding(
+            get: { model.messageDeletionError != nil },
+            set: { if !$0 { model.messageDeletionError = nil } }
+        )) {
+            Button("好", role: .cancel) { model.messageDeletionError = nil }
+        } message: {
+            Text(model.messageDeletionError ?? "")
         }
     }
 }
@@ -503,6 +520,8 @@ private struct MessageList: View {
 
     private func messageTransition(for message: ChatMessage) -> AnyTransition {
         let anchor: UnitPoint = message.direction == .outgoing ? .trailing : .leading
+        let removal: AnyTransition = .opacity
+            .combined(with: .scale(scale: 0.82, anchor: anchor))
 
         switch activeLoadAnimationMode {
         case .converge:
@@ -514,22 +533,25 @@ private struct MessageList: View {
                         )
                     )
                     .combined(with: .scale(scale: 0.94, anchor: anchor)),
-                removal: .opacity
+                removal: removal
             )
         case .fade:
-            return .opacity.combined(with: .scale(scale: 0.97, anchor: .center))
+            return .asymmetric(
+                insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .center)),
+                removal: removal
+            )
         case .slideUp:
             return .asymmetric(
                 insertion: .move(edge: .bottom).combined(with: .opacity),
-                removal: .opacity
+                removal: removal
             )
         case .zoom:
             return .asymmetric(
                 insertion: .scale(scale: 0.84, anchor: anchor).combined(with: .opacity),
-                removal: .opacity
+                removal: removal
             )
         case .instant, .random:
-            return .identity
+            return .asymmetric(insertion: .identity, removal: removal)
         }
     }
 
@@ -726,27 +748,57 @@ private struct MessageBubble: View {
                             y: 2
                         )
                         .frame(maxWidth: 520, alignment: isOutgoing ? .trailing : .leading)
-                        .contextMenu {
-                            Button("复制文本") {
-                                let pasteboard = NSPasteboard.general
-                                pasteboard.clearContents()
-                                pasteboard.setString(model.displayText(for: message), forType: .string)
-                            }
-                        }
                 }
 
-                ForEach(message.attachments) { attachment in
-                    if attachment.kind == .image {
-                        ImageAttachmentView(attachment: attachment) {
-                            model.deleteImage(attachment.id, from: message, conversationID: conversationID)
-                        }
+                ForEach(model.attachmentGroups(for: message)) { group in
+                    if group.isImageGroup, group.attachments.count > 1 {
+                        ImageAlbumView(
+                            attachments: group.attachments,
+                            onDelete: { attachmentID in
+                                model.deleteImage(
+                                    attachmentID,
+                                    from: message,
+                                    conversationID: conversationID
+                                )
+                            }
+                        )
+                        .frame(maxWidth: 360, alignment: isOutgoing ? .trailing : .leading)
+                        .transition(.scale(scale: 0.9, anchor: isOutgoing ? .trailing : .leading).combined(with: .opacity))
+                    } else if let attachment = group.attachments.first {
+                        if attachment.isImage {
+                            ImageAttachmentView(attachment: attachment) {
+                                model.deleteImage(
+                                    attachment.id,
+                                    from: message,
+                                    conversationID: conversationID
+                                )
+                            }
                             .frame(maxWidth: 360, alignment: isOutgoing ? .trailing : .leading)
-                    } else {
-                        FileAttachmentView(attachment: attachment)
-                            .frame(maxWidth: 380, alignment: isOutgoing ? .trailing : .leading)
+                            .transition(.scale(scale: 0.9, anchor: isOutgoing ? .trailing : .leading).combined(with: .opacity))
+                        } else {
+                            FileAttachmentView(attachment: attachment)
+                                .frame(maxWidth: 380, alignment: isOutgoing ? .trailing : .leading)
+                        }
                     }
                 }
             }
+            .contextMenu {
+                let displayText = model.displayText(for: message)
+                if !displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button("复制文本") {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(displayText, forType: .string)
+                    }
+                }
+                Button("删除消息", role: .destructive) {
+                    model.deleteMessage(message, conversationID: conversationID)
+                }
+            }
+            .animation(
+                .spring(response: 0.32, dampingFraction: 0.86),
+                value: message.attachments.map(\.id)
+            )
 
             if isOutgoing {
                 avatar
@@ -884,12 +936,16 @@ private struct MessageComposer: View {
                     .help("选择表情")
 
                     Button {
-                        model.chooseAndSendImage()
+                        model.chooseAndAddImages()
                     } label: {
                         Image(systemName: "photo.on.rectangle.angled")
                     }
                     .help("发送图片")
-                    .disabled(model.selectedConversationID == nil)
+                    .disabled(
+                        model.selectedConversationID == nil
+                            || model.isPreparingPastedImage
+                            || model.isPreparingAttachment
+                    )
 
                     Button {
                         model.captureScreenshot()

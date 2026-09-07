@@ -253,6 +253,56 @@ final class ChatHistoryStore {
         }
     }
 
+    func deleteMessage(
+        id: UUID,
+        conversationID: String,
+        completion: @escaping (Result<[ChatAttachment], Error>) -> Void
+    ) {
+        queue.async {
+            do {
+                var attachments: [ChatAttachment] = []
+                try self.performTransaction {
+                    let query = try self.prepare(
+                        "SELECT attachments_json FROM messages WHERE id = ? AND peer_id = ?"
+                    )
+                    defer { sqlite3_finalize(query) }
+                    try self.bindText(id.uuidString, at: 1, in: query)
+                    try self.bindText(conversationID, at: 2, in: query)
+                    guard sqlite3_step(query) == SQLITE_ROW else {
+                        throw ChatHistoryStoreError.sqlite("聊天记录不存在")
+                    }
+                    let deletedAttachments = self.decodeAttachments(self.columnText(query, 0))
+
+                    let deletion = try self.prepare(
+                        "DELETE FROM messages WHERE id = ? AND peer_id = ?"
+                    )
+                    defer { sqlite3_finalize(deletion) }
+                    try self.bindText(id.uuidString, at: 1, in: deletion)
+                    try self.bindText(conversationID, at: 2, in: deletion)
+                    try self.stepDone(deletion)
+
+                    for attachment in deletedAttachments {
+                        let references = try self.prepare("""
+                            SELECT 1 FROM messages, json_each(messages.attachments_json) AS attachment
+                            WHERE json_extract(attachment.value, '$.localPath') = ? LIMIT 1
+                            """)
+                        try self.bindText(attachment.localPath, at: 1, in: references)
+                        let referenceResult = sqlite3_step(references)
+                        sqlite3_finalize(references)
+                        if referenceResult == SQLITE_DONE {
+                            attachments.append(attachment)
+                        } else if referenceResult != SQLITE_ROW {
+                            throw ChatHistoryStoreError.databaseUnavailable("无法检查消息附件引用")
+                        }
+                    }
+                }
+                completion(.success(attachments))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
     func setUnreadCount(_ count: Int, for peerID: String) {
         enqueue {
             try self.updateUnreadCount(max(0, count), for: peerID)

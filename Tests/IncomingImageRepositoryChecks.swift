@@ -283,6 +283,28 @@ enum IncomingImageRepositoryChecks {
             saved.signal()
         }
         precondition(saved.wait(timeout: .now() + 5) == .success)
+
+        let removableImage = try storage.saveInlineImage(dib, imageID: "33003300", isBitmap: true)
+        let removableMessage = ChatMessage(
+            direction: .incoming,
+            text: "整条消息删除",
+            senderName: peer.displayName,
+            recipientName: "Mac",
+            attachments: [removableImage]
+        )
+        history.saveMessage(removableMessage, for: peer, unreadCount: 0)
+        repository.deleteMessage(removableMessage, conversationID: peer.id) { result in
+            try! result.get()
+            precondition(!removableImage.isAvailable, "deleting a message removes its unreferenced attachment")
+            saved.signal()
+        }
+        precondition(saved.wait(timeout: .now() + 5) == .success)
+        history.loadRecentMessages(for: peer.id, limit: 60) { result in
+            let messages = try! result.get().messages
+            precondition(!messages.contains(where: { $0.id == removableMessage.id }), "deleted message survives no reload")
+            saved.signal()
+        }
+        precondition(saved.wait(timeout: .now() + 5) == .success)
         withExtendedLifetime(repository) {}
         print("Incoming image repository checks passed")
     }

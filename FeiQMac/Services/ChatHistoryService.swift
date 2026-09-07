@@ -30,6 +30,11 @@ protocol ChatHistoryService: AnyObject {
         deleteUnreferencedFile: @escaping (ChatAttachment) throws -> Void,
         completion: @escaping (Result<ChatMessage, Error>) -> Void
     )
+    func deleteMessage(
+        id: UUID,
+        conversationID: String,
+        completion: @escaping (Result<[ChatAttachment], Error>) -> Void
+    )
     func saveMessage(
         _ message: ChatMessage,
         for peer: FeiQPeer,
@@ -144,6 +149,18 @@ final class SQLiteChatHistoryService: ChatHistoryService {
         store.removeImage(
             attachmentID: attachmentID, messageID: messageID, conversationID: conversationID,
             deleteUnreferencedFile: deleteUnreferencedFile, completion: completion
+        )
+    }
+
+    func deleteMessage(
+        id: UUID,
+        conversationID: String,
+        completion: @escaping (Result<[ChatAttachment], Error>) -> Void
+    ) {
+        store.deleteMessage(
+            id: id,
+            conversationID: conversationID,
+            completion: completion
         )
     }
 

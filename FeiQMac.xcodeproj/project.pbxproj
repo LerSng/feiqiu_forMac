@@ -39,6 +39,7 @@
 		B20000000000000000000001 /* FeiQInlineImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* FeiQInlineImage.swift */; };
 		B20000000000000000000003 /* PasteAwareTextEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* PasteAwareTextEditor.swift */; };
 		D10000000000000000000001 /* FilePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000002 /* FilePreviewView.swift */; };
+		D30000000000000000000001 /* ChatImageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000002 /* ChatImageView.swift */; };
 		D20000000000000000000001 /* ScreenshotCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000002 /* ScreenshotCaptureService.swift */; };
 /* End PBXBuildFile section */
 
@@ -78,6 +79,7 @@
 		B20000000000000000000004 /* PasteAwareTextEditor.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PasteAwareTextEditor.swift; sourceTree = "<group>"; };
 		D10000000000000000000002 /* FilePreviewView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
 		D20000000000000000000002 /* ScreenshotCaptureService.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ScreenshotCaptureService.swift; sourceTree = "<group>"; };
+		D30000000000000000000002 /* ChatImageView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatImageView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -188,6 +190,7 @@
 				C30000000000000000000002 /* WindowShakeView.swift */,
 				B20000000000000000000004 /* PasteAwareTextEditor.swift */,
 				D10000000000000000000002 /* FilePreviewView.swift */,
+				D30000000000000000000002 /* ChatImageView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -350,6 +353,7 @@
 				C30000000000000000000001 /* WindowShakeView.swift in Sources */,
 				B20000000000000000000003 /* PasteAwareTextEditor.swift in Sources */,
 				D10000000000000000000001 /* FilePreviewView.swift in Sources */,
+				D30000000000000000000001 /* ChatImageView.swift in Sources */,
 				D20000000000000000000001 /* ScreenshotCaptureService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

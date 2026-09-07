@@ -27,7 +27,7 @@ struct FeiQMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("飞秋 Mac") {
+        WindowGroup("") {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 980, minHeight: 660)

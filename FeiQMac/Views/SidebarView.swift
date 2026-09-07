@@ -30,10 +30,14 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            appBrandHeader
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+
             profileHeader
                 .padding(.horizontal, 20)
-                .padding(.top, 18)
-                .padding(.bottom, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 18)
 
             VStack(spacing: 14) {
                 HStack(spacing: 8) {
@@ -192,6 +196,25 @@ struct SidebarView: View {
         }
     }
 
+    private var appBrandHeader: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(FeiQUI.accent)
+                .frame(width: 28, height: 28)
+                .background(FeiQUI.accentSoft, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            Text("飞秋 Mac")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 0)
+        }
+        .frame(height: 30)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("飞秋 Mac")
+    }
+
     private func sectionTitle(_ title: String, count: Int) -> some View {
         HStack {
             Text(title)
@@ -274,6 +297,7 @@ private struct ConversationRow<Avatar: View>: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: unreadCount)
+        .animation(.spring(response: 0.32, dampingFraction: 0.84), value: isSelected)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

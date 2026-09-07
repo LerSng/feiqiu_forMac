@@ -15,6 +15,7 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var logs: [String] = []
     @Published private(set) var isRunning = false
     @Published private(set) var typingPeerIDs: Set<String> = []
+    @Published private(set) var deletingMessageIDs: Set<UUID> = []
 
     @Published var selectedPeerID: String?
     @Published var selectedGroupID: String?
@@ -36,6 +37,7 @@ final class ChatViewModel: ObservableObject {
 
     @Published var showingLogs = false
     @Published var imageDeletionError: String?
+    @Published var messageDeletionError: String?
     @Published var showingGroupEditor = false
     @Published var editingGroupID: String?
 
@@ -557,6 +559,37 @@ final class ChatViewModel: ObservableObject {
                     self.deletedImageIDsByMessage[message.id]?.remove(attachmentID)
                     self.imageDeletionError = error.localizedDescription
                     self.appendLog("删除图片失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func deleteMessage(_ message: ChatMessage, conversationID: String) {
+        guard deletingMessageIDs.insert(message.id).inserted else { return }
+        let currentMessages = messagesByPeer[conversationID] ?? []
+        guard currentMessages.contains(where: { $0.id == message.id }) else {
+            deletingMessageIDs.remove(message.id)
+            return
+        }
+
+        historyMessageUpdates.removeValue(forKey: message.id)
+        messagesByPeer[conversationID]?.removeAll { $0.id == message.id }
+        receivedFilesByConversation[conversationID]?.removeAll {
+            $0.id.hasPrefix(message.id.uuidString + ":")
+        }
+
+        repository.deleteMessage(message, conversationID: conversationID) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.deletingMessageIDs.remove(message.id)
+                if case .failure(let error) = result {
+                    let liveMessages = self.messagesByPeer[conversationID] ?? []
+                    self.messagesByPeer[conversationID] = self.mergeMessages(
+                        [message],
+                        with: liveMessages
+                    )
+                    self.messageDeletionError = "消息删除失败：\(error.localizedDescription)"
+                    self.appendLog("删除消息失败：\(error.localizedDescription)")
                 }
             }
         }

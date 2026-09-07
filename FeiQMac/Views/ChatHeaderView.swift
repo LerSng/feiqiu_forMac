@@ -15,10 +15,10 @@ struct GroupChatHeader: View {
         HStack(spacing: 12) {
             GroupAvatar(size: 38)
             VStack(alignment: .leading, spacing: 5) {
-                Text(group.displayName)
+                Text("\(group.memberCount) 位成员")
                     .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
-                Text("\(group.memberCount) 位成员 · \(model.members(for: group.id).filter(\.isOnline).count) 人在线")
+                Text("\(model.members(for: group.id).filter(\.isOnline).count) 人在线")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -30,10 +30,11 @@ struct GroupChatHeader: View {
             .help("群聊资料与成员")
             .accessibilityLabel("群聊资料与成员")
         }
-        .padding(.horizontal, 24)
-        .frame(height: 76)
-        .background(FeiQUI.chatBackground)
-        .overlay(alignment: .bottom) { Divider().opacity(0.5) }
+        .padding(.horizontal, 20)
+        .frame(height: 70)
+        .background(FeiQUI.cardBackground.opacity(0.62))
+        .overlay(alignment: .bottom) { Divider().opacity(0.45) }
+        .animation(.easeInOut(duration: 0.2), value: model.members(for: group.id).filter(\.isOnline).count)
     }
 }
 
@@ -47,15 +48,14 @@ struct ChatHeader: View {
         HStack(spacing: 12) {
             ContactAvatar(name: peer.displayName, isOnline: peer.isOnline, size: 38, showsStatus: false)
             VStack(alignment: .leading, spacing: 5) {
-                Text(peer.displayName)
-                    .font(.system(size: 16, weight: .semibold))
-                    .lineLimit(1)
                 HStack(spacing: 6) {
                     FeiQStatusDot(color: model.isPeerTyping(peer.id) ? FeiQUI.accent : (peer.isOnline ? .green : .gray), size: 5)
                     Text(model.isPeerTyping(peer.id) ? "对方正在输入…" : (peer.isOnline ? "在线" : "离线"))
                 }
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 15, weight: .semibold))
+                Text(peer.ipAddress)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 12)
             HStack(spacing: 8) {
@@ -74,9 +74,10 @@ struct ChatHeader: View {
             }
             .buttonStyle(FeiQIconButtonStyle())
         }
-        .padding(.horizontal, 24)
-        .frame(height: 76)
-        .background(FeiQUI.chatBackground)
-        .overlay(alignment: .bottom) { Divider().opacity(0.5) }
+        .padding(.horizontal, 20)
+        .frame(height: 70)
+        .background(FeiQUI.cardBackground.opacity(0.62))
+        .overlay(alignment: .bottom) { Divider().opacity(0.45) }
+        .animation(.easeInOut(duration: 0.2), value: model.isPeerTyping(peer.id))
     }
 }

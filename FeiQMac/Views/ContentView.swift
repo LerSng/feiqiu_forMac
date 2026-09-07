@@ -16,6 +16,8 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 260, ideal: 290, max: 360)
         } detail: {
             ChatDetailView()
+                .navigationTitle(detailTitle)
+                .animation(.easeInOut(duration: 0.2), value: detailTitle)
         }
         .navigationSplitViewStyle(.balanced)
         .tint(FeiQUI.accent)
@@ -55,5 +57,15 @@ struct ContentView: View {
             RemoteAssistanceRequestView(request: request)
                 .environmentObject(model)
         }
+    }
+
+    private var detailTitle: String {
+        if let group = model.selectedGroup {
+            return group.displayName
+        }
+        if let peer = model.selectedPeer {
+            return peer.displayName
+        }
+        return ""
     }
 }

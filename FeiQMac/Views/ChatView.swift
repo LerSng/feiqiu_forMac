@@ -10,7 +10,7 @@ import AppKit
 
 struct ChatDetailView: View {
     @EnvironmentObject private var model: ChatViewModel
-    @State private var isPeerSidebarCollapsed = false
+    @AppStorage("chat.detailsCollapsed") private var isPeerSidebarCollapsed = true
 
     var body: some View {
         Group {
@@ -30,7 +30,11 @@ struct ChatDetailView: View {
                 }
             } else if let peer = model.selectedPeer {
                 VStack(spacing: 0) {
-                    ChatHeader(peer: peer)
+                    ChatHeader(peer: peer, isShowingDetails: !isPeerSidebarCollapsed) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isPeerSidebarCollapsed.toggle()
+                        }
+                    }
                     HStack(spacing: 0) {
                         MessageList(
                             conversationID: peer.id,
@@ -41,29 +45,16 @@ struct ChatDetailView: View {
                         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                         .layoutPriority(1)
 
-                        Divider()
-
-                        Group {
-                            if isPeerSidebarCollapsed {
-                                CollapsedPeerSidebar {
-                                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                                        isPeerSidebarCollapsed = false
-                                    }
-                                }
-                            } else {
+                        if !isPeerSidebarCollapsed {
+                            Divider().opacity(0.5)
                                 PeerContextSidebar(peer: peer) {
-                                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
                                         isPeerSidebarCollapsed = true
                                     }
                                 }
-                            }
+                                .frame(width: 238)
+                                .clipped()
                         }
-                        .frame(width: isPeerSidebarCollapsed ? 40 : 252)
-                        .clipped()
-                        .animation(
-                            .spring(response: 0.32, dampingFraction: 0.86),
-                            value: isPeerSidebarCollapsed
-                        )
                     }
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                     Divider()
@@ -75,132 +66,9 @@ struct ChatDetailView: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .background(FeiQUI.chatBackground)
-        .overlay {
-            Rectangle()
-                .stroke(FeiQUI.separator, lineWidth: 1)
-        }
     }
 }
 
-private struct GroupChatHeader: View {
-    @EnvironmentObject private var model: ChatViewModel
-    let group: ChatGroup
-
-    private var onlineMemberCount: Int {
-        model.members(for: group.id).filter(\.isOnline).count
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            GroupAvatar(size: 40)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(group.displayName)
-                    .font(.title2.weight(.semibold))
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    Image(systemName: "person.3.fill")
-                        .foregroundStyle(FeiQUI.accent)
-                    Text("\(group.memberCount) 位成员")
-                    Text("·")
-                    Text("\(onlineMemberCount) 人在线")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            ChatHeaderActions {
-                model.showingLogs = true
-            }
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 13)
-        .background(FeiQUI.chatBackground)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(FeiQUI.separator)
-                .frame(height: 1)
-        }
-    }
-}
-
-private struct ChatHeader: View {
-    @EnvironmentObject private var model: ChatViewModel
-    let peer: FeiQPeer
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ContactAvatar(name: peer.displayName, isOnline: peer.isOnline, size: 40)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(peer.displayName)
-                    .font(.title2.weight(.semibold))
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    FeiQStatusDot(
-                        color: model.isPeerTyping(peer.id)
-                            ? FeiQUI.accent
-                            : (peer.isOnline ? Color.green : Color.secondary)
-                    )
-                    Text(model.isPeerTyping(peer.id)
-                        ? "对方正在输入…"
-                        : (peer.isOnline ? "在线" : "最近离线"))
-                        .fontWeight(.medium)
-                    if !model.isPeerTyping(peer.id) {
-                        Text("·")
-                        Text(peer.detailText)
-                            .lineLimit(1)
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            ChatHeaderActions {
-                model.showingLogs = true
-            }
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 13)
-        .background(FeiQUI.chatBackground)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(FeiQUI.separator)
-                .frame(height: 1)
-        }
-    }
-}
-
-private struct ChatHeaderActions: View {
-    let showLogs: () -> Void
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Button(action: showLogs) {
-                Image(systemName: "ellipsis.bubble")
-                    .font(.system(size: 20, weight: .medium))
-                    .frame(width: 34, height: 34)
-            }
-            .help("查看网络日志")
-
-            Menu {
-                Button("网络日志", action: showLogs)
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 18, weight: .bold))
-                    .frame(width: 30, height: 34)
-            }
-            .menuStyle(.borderlessButton)
-            .help("更多操作")
-        }
-        .foregroundStyle(.secondary)
-        .buttonStyle(.plain)
-    }
-}
 
 private struct PeerContextSidebar: View {
     let peer: FeiQPeer
@@ -230,7 +98,7 @@ private struct PeerContextSidebar: View {
                 .frame(maxHeight: 260)
         }
         .padding(12)
-        .frame(width: 252)
+        .frame(width: 238)
         .frame(maxHeight: .infinity)
         .background(FeiQUI.listBackground)
     }
@@ -351,14 +219,14 @@ private struct ReceivedFilesPanel: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 100)
             } else {
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     LazyVStack(spacing: 4) {
                         ForEach(model.receivedFiles(for: conversationID)) { file in
                             ReceivedFileRow(file: file)
                         }
                     }
                 }
-                .autoHidingScrollIndicators()
+                .hiddenScrollIndicators()
             }
         }
         .padding(12)
@@ -432,7 +300,7 @@ private struct MessageList: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 15) {
                     if messages.isEmpty {
                         Group {
@@ -555,7 +423,7 @@ private struct MessageList: View {
                     .allowsHitTesting(false)
                 }
             }
-            .autoHidingScrollIndicators()
+            .hiddenScrollIndicators()
             .onAppear {
                 if !model.isLoadingMessages {
                     didFinishInitialLoad = true
@@ -1293,7 +1161,7 @@ private struct DraftAttachmentStrip: View {
     let onRemove: (String) -> Void
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: true) {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(attachments) { attachment in
                     ZStack(alignment: .topTrailing) {
@@ -1318,7 +1186,7 @@ private struct DraftAttachmentStrip: View {
             }
             .padding(.vertical, 2)
         }
-        .autoHidingScrollIndicators()
+        .hiddenScrollIndicators()
         .frame(height: 76)
     }
 }

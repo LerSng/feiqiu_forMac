@@ -47,6 +47,7 @@ protocol FeiQNetworkServiceProtocol: AnyObject {
     func announce()
     func replyToEntry(from ipAddress: String)
     func sendTyping(isTyping: Bool, to ipAddress: String)
+    func sendShake(to ipAddress: String)
     func sendText(_ text: String, to ipAddress: String, recipientName: String?)
     func sendFileMessage(
         _ text: String,
@@ -145,6 +146,20 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
     func replyToEntry(from ipAddress: String) {
         queue.async { [weak self] in
             self?.sendAnswerEntryInternal(to: ipAddress)
+        }
+    }
+
+    func sendShake(to ipAddress: String) {
+        queue.async { [weak self] in
+            guard let self, self.running else { return }
+            let packet = FeiQPacket(
+                packetNumber: self.nextPacketNumber(), senderName: self.localName,
+                senderHost: self.localHost, command: .shake,
+                versionIdentifier: self.feiQVersionIdentifier
+            )
+            if self.sendUDP(packet.encoded(), to: ipAddress) {
+                self.emitLog("UDP → \(ipAddress)：已发送抖一抖（等待确认）")
+            }
         }
     }
 
@@ -752,13 +767,19 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
             emitLog("\(transport.rawValue.uppercased()) ← \(ipAddress)：无法解析报文（\(data.count) bytes，前 96 bytes: \(preview)）")
             return
         }
+        if packet.commandType == .shake, transport == .udp {
+            let ack = FeiQPacket(
+                packetNumber: nextPacketNumber(), senderName: localName,
+                senderHost: localHost, command: .shakeAcknowledgement,
+                versionIdentifier: feiQVersionIdentifier
+            )
+            _ = sendUDP(ack.encoded(), to: ipAddress, port: sourcePort)
+        }
         if packet.commandType?.isInlineImageChunk == true {
             guard transport == .udp, let chunk = FeiQInlineImageCodec.decode(packet.additionalData) else {
                 emitLog("图片分片格式无效（\(packet.additionalData.count) bytes）")
                 return
             }
-            let result = imageAssembler.accept(chunk, from: ipAddress)
-            guard result.accepted else { return }
             let acknowledgementCommand: FeiQCommand =
                 packet.commandType == .legacyInlineImage
                     ? .legacyInlineImageAcknowledgement
@@ -766,7 +787,19 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
             let ack = FeiQPacket(packetNumber: nextPacketNumber(), senderName: localName, senderHost: localHost,
                                  command: acknowledgementCommand,
                                  additionalText: "\(chunk.imageID)|\(chunk.index)#", versionIdentifier: feiQVersionIdentifier)
-            _ = sendUDP(ack.encoded(), to: ipAddress, port: sourcePort)
+            let result = imageAssembler.accept(chunk, from: ipAddress) {
+                let bytes = ack.encoded()
+                _ = sendUDP(bytes, to: ipAddress, port: sourcePort)
+                // FeiQ 2013 can stall its send window after a lost ACK.
+                // Match the measured redundancy policy in feiqiu-README.md.
+                if chunk.index <= 160 || chunk.index.isMultiple(of: 32) {
+                    _ = sendUDP(bytes, to: ipAddress, port: sourcePort)
+                }
+            }
+            guard result.accepted else {
+                emitLog("图片分片被拒绝：\(chunk.imageID)，\(chunk.index)/\(chunk.totalChunks)，元数据冲突或重组容量不足")
+                return
+            }
             if packet.commandType == .legacyInlineImage {
                 // A few builds send 0x77 data but still listen for the newer
                 // 0xC1 acknowledgement. Sending both is harmless and keeps

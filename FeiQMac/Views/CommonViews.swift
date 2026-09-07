@@ -18,7 +18,6 @@ struct FeiQUnreadBadge: View {
                 .frame(minWidth: 20, minHeight: 20)
                 .padding(.horizontal, count > 9 ? 3 : 0)
                 .background(FeiQUI.unreadBadge, in: Capsule())
-                .shadow(color: FeiQUI.unreadBadge.opacity(0.24), radius: 3, y: 1)
                 .transition(
                     .scale(scale: 0.45, anchor: .trailing)
                         .combined(with: .opacity)
@@ -60,10 +59,6 @@ struct FeiQIconBadge: View {
             .foregroundStyle(tint)
             .frame(width: size, height: size)
             .background(tint.opacity(0.12), in: Circle())
-            .overlay {
-                Circle()
-                    .stroke(tint.opacity(0.14), lineWidth: 1)
-            }
     }
 }
 
@@ -100,10 +95,6 @@ struct FeiQSurfaceModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(fill, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(FeiQUI.separator, lineWidth: 1)
-            }
             .shadow(
                 color: shadow ? Color.black.opacity(0.05) : .clear,
                 radius: shadow ? 6 : 0,
@@ -126,18 +117,7 @@ struct FeiQSelectionRowModifier: ViewModifier {
                             : (isHovering ? Color.primary.opacity(0.055) : .clear)
                     )
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: FeiQUI.rowRadius, style: .continuous)
-                    .stroke(isSelected ? FeiQUI.selectedBorder : .clear, lineWidth: 1)
-            }
-            .overlay(alignment: .leading) {
-                if isSelected {
-                    Capsule()
-                        .fill(FeiQUI.accent)
-                        .frame(width: 3, height: 24)
-                        .padding(.leading, 2)
-                }
-            }
+            .animation(.easeOut(duration: 0.15), value: isHovering)
     }
 }
 
@@ -163,5 +143,32 @@ extension View {
                 isHovering: isHovering
             )
         )
+    }
+}
+
+/// 工具按钮只在悬停或按下时显示底色，避免常驻的小方框堆叠。
+struct FeiQIconButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        IconBody(label: configuration.label, isPressed: configuration.isPressed, isEnabled: isEnabled)
+    }
+
+    private struct IconBody: View {
+        let label: ButtonStyleConfiguration.Label
+        let isPressed: Bool
+        let isEnabled: Bool
+        @State private var isHovering = false
+
+        var body: some View {
+            label
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(isEnabled ? Color.secondary : Color.secondary.opacity(0.4))
+                .frame(width: 32, height: 32)
+                .background(isEnabled && (isHovering || isPressed) ? FeiQUI.subtleFill : .clear,
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(Rectangle())
+                .onHover { isHovering = $0 }
+        }
     }
 }

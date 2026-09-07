@@ -27,6 +27,9 @@ final class ChatViewModel: ObservableObject {
     @Published var groupName: String
     @Published var chatLoadAnimationMode: ChatLoadAnimationMode
     @Published var showingSettings = false
+    @Published private(set) var windowShakeID = UUID()
+    @Published private(set) var shakeCoolingDown = false
+
     @Published var showingLogs = false
     @Published var showingGroupEditor = false
     @Published var editingGroupID: String?
@@ -35,12 +38,38 @@ final class ChatViewModel: ObservableObject {
     private let settingsRepository: AppSettingsRepository
     private var offlineTimer: Timer?
     private var historyRequestGeneration = 0
+    private var historyMessageUpdates: [UUID: ChatMessage] = [:]
     private var typingTimers: [String: DispatchWorkItem] = [:]
     private var localTypingPeerID: String?
     private var localTypingStopWorkItem: DispatchWorkItem?
 
     private static let messagePageSize = 60
     private static let inMemoryMessageLimit = 240
+
+    var canSendShake: Bool {
+        isRunning && selectedPeer?.isOnline == true && !shakeCoolingDown
+    }
+
+    var compatibleEmoticons: [FeiQMessageFormatter.CompatibleEmoticon] {
+        FeiQMessageFormatter.compatibleEmoticons
+    }
+
+    func sendShake() {
+        guard canSendShake, let peer = selectedPeer else { return }
+        shakeCoolingDown = true
+        repository.sendShake(to: peer)
+        let message = ChatMessage(
+            direction: .outgoing, text: "你向对方发送了抖一抖",
+            senderName: nickname, recipientName: peer.displayName
+        )
+        appendMessageToCurrentConversation(message, conversationID: peer.id)
+        repository.persistMessage(message, for: peer, unreadCount: unreadCount(for: peer.id))
+        windowShakeID = UUID()
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            self?.shakeCoolingDown = false
+        }
+    }
 
     var selectedPeer: FeiQPeer? {
         guard selectedGroupID == nil else { return nil }
@@ -263,6 +292,7 @@ final class ChatViewModel: ObservableObject {
             return
         }
 
+        historyMessageUpdates.removeAll()
         isLoadingMessages = true
         let requestGeneration = historyRequestGeneration
         repository.loadEarlierMessages(
@@ -281,7 +311,7 @@ final class ChatViewModel: ObservableObject {
                 case .success(let page):
                     let currentMessages = self.messagesByPeer[conversationID] ?? []
                     self.messagesByPeer[conversationID] = self.mergeMessages(
-                        page.messages,
+                        page.messages.map { self.historyMessageUpdates[$0.id] ?? $0 },
                         with: currentMessages
                     )
                     self.hasMoreMessages = page.hasMore
@@ -491,8 +521,45 @@ final class ChatViewModel: ObservableObject {
         )
     }
 
+    private func receiveDirectMessage(_ message: ChatMessage, from peer: FeiQPeer, isShake: Bool = false) {
+        let isViewing = isViewingConversation(for: peer)
+        appendMessageToCurrentConversation(message, conversationID: peer.id)
+        appendReceivedFiles(
+            from: message,
+            conversationID: peer.id,
+            senderName: peer.displayName
+        )
+        if !isViewing {
+            unreadCountsByPeer[peer.id, default: 0] += 1
+        }
+        repository.persistMessage(
+            message,
+            for: peer,
+            unreadCount: unreadCount(for: peer.id)
+        )
+        let belongsToGroup = groups.contains { group in
+            group.memberIDs.contains(peer.id)
+        }
+        if !isViewing, isShake || !belongsToGroup {
+            repository.notifyIncomingMessage(
+                text: notificationPreview(for: message),
+                from: peer.displayName,
+                conversationID: peer.id
+            )
+        }
+    }
+
     private func handle(_ event: ChatRepositoryEvent) {
         switch event {
+        case .peerShook(let peer):
+            mergePeer(peer)
+            let message = ChatMessage(
+                direction: .incoming, text: "对方向你发送了抖一抖",
+                senderName: peer.displayName, recipientName: nickname
+            )
+            receiveDirectMessage(message, from: peer, isShake: true)
+            windowShakeID = UUID()
+
         case .peerUpdated(let peer):
             mergePeer(peer)
             if selectedConversationID == nil, peer.isOnline {
@@ -518,31 +585,19 @@ final class ChatViewModel: ObservableObject {
             }
 
         case .messageReceived(let message, let peer):
-            let isViewing = isViewingConversation(for: peer)
-            appendMessageToCurrentConversation(message, conversationID: peer.id)
-            appendReceivedFiles(
-                from: message,
-                conversationID: peer.id,
-                senderName: peer.displayName
-            )
-            if !isViewing {
-                unreadCountsByPeer[peer.id, default: 0] += 1
+            receiveDirectMessage(message, from: peer)
+
+        case .messageUpdated(let message, let peer):
+            // Completing an existing image is not a new incoming message:
+            // keep its position, timestamp, unread count and notification.
+            if let index = messagesByPeer[peer.id]?.firstIndex(where: { $0.id == message.id }) {
+                messagesByPeer[peer.id]?[index] = message
             }
-            repository.persistMessage(
-                message,
-                for: peer,
-                unreadCount: unreadCount(for: peer.id)
-            )
-            let belongsToGroup = groups.contains { group in
-                group.memberIDs.contains(peer.id)
+            if isLoadingMessages, selectedConversationID == peer.id {
+                historyMessageUpdates[message.id] = message
             }
-            if !isViewing, !belongsToGroup {
-                repository.notifyIncomingMessage(
-                    text: notificationPreview(for: message),
-                    from: peer.displayName,
-                    conversationID: peer.id
-                )
-            }
+            appendReceivedFiles(from: message, conversationID: peer.id, senderName: peer.displayName)
+            repository.persistMessage(message, for: peer, unreadCount: unreadCount(for: peer.id))
 
         case .groupMessageReceived(let message, let group):
             if !groups.contains(where: { $0.id == group.id }) {
@@ -615,6 +670,7 @@ final class ChatViewModel: ObservableObject {
         draftAttachments.removeAll()
         isPreparingPastedImage = false
         messagesByPeer.removeAll()
+        historyMessageUpdates.removeAll()
         historyRequestGeneration += 1
         isLoadingMessages = false
         hasMoreMessages = false
@@ -630,6 +686,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func loadRecentMessages(for conversationID: String) {
+        historyMessageUpdates.removeAll()
         isLoadingMessages = true
         let requestGeneration = historyRequestGeneration
         repository.loadRecentMessages(
@@ -647,7 +704,7 @@ final class ChatViewModel: ObservableObject {
                 case .success(let page):
                     let liveMessages = self.messagesByPeer[conversationID] ?? []
                     self.messagesByPeer[conversationID] = self.mergeMessages(
-                        page.messages,
+                        page.messages.map { self.historyMessageUpdates[$0.id] ?? $0 },
                         with: liveMessages
                     )
                     self.hasMoreMessages = page.hasMore
@@ -681,7 +738,15 @@ final class ChatViewModel: ObservableObject {
                 }
                 switch result {
                 case .success(let files):
-                    self.receivedFilesByConversation[conversationID] = files
+                    // Do not overwrite attachments received while this
+                    // asynchronous history query was in flight.
+                    let liveFiles = self.receivedFilesByConversation[conversationID] ?? []
+                    var byID = Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0) })
+                    for file in liveFiles { byID[file.id] = file }
+                    self.receivedFilesByConversation[conversationID] = Array(byID.values.sorted {
+                        $0.receivedAt == $1.receivedAt
+                            ? $0.id < $1.id : $0.receivedAt > $1.receivedAt
+                    }.prefix(120))
                 case .failure(let error):
                     self.appendLog("接收文件列表读取失败：\(error.localizedDescription)")
                 }

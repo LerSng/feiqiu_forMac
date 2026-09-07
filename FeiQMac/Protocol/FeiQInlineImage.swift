@@ -90,15 +90,23 @@ final class FeiQInlineImageAssembler {
     func clear() { buffers.removeAll(); completed.removeAll() }
 
     func prune(now: Date = Date()) {
-        buffers = buffers.filter { now.timeIntervalSince($0.value.updatedAt) < 90 }
+        buffers = buffers.filter { now.timeIntervalSince($0.value.updatedAt) < 600 }
         completed = completed.filter { now.timeIntervalSince($0.value) < 180 }
     }
 
     /// Returns whether this chunk was accepted (and may be ACKed), together
     /// with the completed bytes once only. Keys include the remote IP.
-    func accept(_ chunk: FeiQInlineImageCodec.Chunk, from ip: String) -> (accepted: Bool, data: Data?) {
+    func accept(
+        _ chunk: FeiQInlineImageCodec.Chunk,
+        from ip: String,
+        onAccepted: () -> Void = {}
+    ) -> (accepted: Bool, data: Data?) {
         let key = ip + "/" + chunk.imageID
-        if completed[key] != nil { return (true, nil) }
+        if let completedAt = completed[key], Date().timeIntervalSince(completedAt) < 180 {
+            onAccepted()
+            return (true, nil)
+        }
+        completed.removeValue(forKey: key)
         if buffers[key] == nil {
             prune()
             guard buffers.count < 8,
@@ -111,11 +119,16 @@ final class FeiQInlineImageAssembler {
               buffer.first.formatFlag == chunk.formatFlag else { return (false, nil) }
         buffer.updatedAt = Date()
         if let old = buffer.chunks[chunk.index] {
-            return (old.offset == chunk.offset && old.data == chunk.data, nil)
+            let matches = old.offset == chunk.offset && old.data == chunk.data
+            if matches { onAccepted() }
+            return (matches, nil)
         }
         guard buffer.byteCount + chunk.data.count <= chunk.totalBytes else { return (false, nil) }
         buffer.chunks[chunk.index] = chunk
         buffer.byteCount += chunk.data.count
+        // ACK after admitting the bounded chunk, before sorting/copying the
+        // complete image. The sender can immediately advance its UDP window.
+        onAccepted()
         guard buffer.chunks.count == chunk.totalChunks else { return (true, nil) }
         var result = Data()
         result.reserveCapacity(chunk.totalBytes)

@@ -50,6 +50,7 @@ struct SettingsView: View {
                 }
             }
             .formStyle(.grouped)
+            .hiddenScrollIndicators()
             .scrollContentBackground(.hidden)
 
             Divider()
@@ -110,7 +111,7 @@ struct LogsView: View {
                 .buttonStyle(.borderedProminent)
             }
 
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 5) {
                     if model.logs.isEmpty {
                         Text("暂无日志")
@@ -128,7 +129,7 @@ struct LogsView: View {
                 }
                 .padding(12)
             }
-            .autoHidingScrollIndicators()
+            .hiddenScrollIndicators()
             .feiQSurface(fill: FeiQUI.cardBackground, cornerRadius: 12, shadow: true)
         }
         .padding(20)

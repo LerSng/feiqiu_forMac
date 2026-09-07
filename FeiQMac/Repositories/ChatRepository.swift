@@ -9,6 +9,7 @@ protocol ChatRepository: AnyObject {
     func updateIdentity(_ identity: FeiQIdentity)
     func announce()
     func updateTyping(isTyping: Bool, for peer: FeiQPeer)
+    func sendShake(to peer: FeiQPeer)
     func sendMessage(
         _ message: ChatMessage,
         to peer: FeiQPeer,
@@ -99,17 +100,25 @@ final class DefaultChatRepository: ChatRepository {
     )
     private var peersByID: [String: FeiQPeer] = [:]
     private var groupsByID: [String: ChatGroup] = [:]
+    // Accessed only on attachmentQueue, like other received packet state.
+    private var lastReceivedShakes: [String: Date] = [:]
     // Owned by attachmentQueue. Marker and image packets can arrive in either order.
     private struct PendingInlineMessage {
+        let id: UUID
         let peer: FeiQPeer
         let text: String
         let recipient: String
         let imageIDs: [String]
         let date: Date
+        var timedOut = false
+        var attachments: [String: ChatAttachment] = [:]
+        var failedImageIDs: Set<String> = []
     }
     private var pendingInlineMessages: [String: PendingInlineMessage] = [:]
     private var receivedInlineImages: [String: (attachment: ChatAttachment, date: Date)] = [:]
     private var receivedMessagePackets: [String: Date] = [:]
+    private let inlineImageTimeout: TimeInterval
+    private let inlineImageRetention: TimeInterval
 
     var onEvent: ((ChatRepositoryEvent) -> Void)?
 
@@ -121,8 +130,13 @@ final class DefaultChatRepository: ChatRepository {
         networkService: FeiQNetworkServiceProtocol,
         historyService: ChatHistoryService,
         attachmentStorageService: ChatAttachmentStorageService,
-        notificationService: NotificationService
+        notificationService: NotificationService,
+        inlineImageTimeout: TimeInterval = 90,
+        inlineImageRetention: TimeInterval = 600
     ) {
+        precondition(inlineImageTimeout > 0 && inlineImageRetention > inlineImageTimeout)
+        self.inlineImageTimeout = inlineImageTimeout
+        self.inlineImageRetention = inlineImageRetention
         self.networkService = networkService
         self.historyService = historyService
         self.attachmentStorageService = attachmentStorageService
@@ -138,7 +152,7 @@ final class DefaultChatRepository: ChatRepository {
                 guard let self else { return }
                 do {
                     let attachment = try self.attachmentStorageService.saveInlineImage(bytes, imageID: imageID, isBitmap: bitmapFlag == 1)
-                    self.receivedInlineImages = self.receivedInlineImages.filter { Date().timeIntervalSince($0.value.date) < 90 }
+                    self.receivedInlineImages = self.receivedInlineImages.filter { Date().timeIntervalSince($0.value.date) < 600 }
                     if self.receivedInlineImages.count >= 256,
                        let oldest = self.receivedInlineImages.min(by: { $0.value.date < $1.value.date })?.key {
                         self.receivedInlineImages.removeValue(forKey: oldest)
@@ -147,6 +161,12 @@ final class DefaultChatRepository: ChatRepository {
                     for key in Array(self.pendingInlineMessages.keys) { self.finishInlineMessage(key) }
                 } catch {
                     self.emit(.log("内嵌图片 \(imageID) 解码失败：\(error.localizedDescription)"))
+                    for key in Array(self.pendingInlineMessages.keys) {
+                        guard self.pendingInlineMessages[key]?.peer.ipAddress == ipAddress,
+                              self.pendingInlineMessages[key]?.imageIDs.contains(imageID) == true else { continue }
+                        self.pendingInlineMessages[key]?.failedImageIDs.insert(imageID)
+                        self.finishInlineMessage(key)
+                    }
                 }
             }
         }
@@ -191,6 +211,11 @@ final class DefaultChatRepository: ChatRepository {
 
     func refreshDiscovery() {
         announce()
+    }
+
+    func sendShake(to peer: FeiQPeer) {
+        guard peer.isOnline else { return }
+        networkService.sendShake(to: peer.ipAddress)
     }
 
     func updateTyping(isTyping: Bool, for peer: FeiQPeer) {
@@ -538,6 +563,19 @@ final class DefaultChatRepository: ChatRepository {
         }
 
         switch packet.commandType {
+        case .shake:
+            guard transport == .udp else { return }
+            let now = Date()
+            lastReceivedShakes = lastReceivedShakes.filter { now.timeIntervalSince($0.value) < 3 }
+            guard lastReceivedShakes[ipAddress] == nil else { return }
+            lastReceivedShakes[ipAddress] = now
+            let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
+            emit(.peerUpdated(peer))
+            emit(.peerShook(peer))
+
+        case .shakeAcknowledgement:
+            emit(.log("来自 \(ipAddress) 的抖一抖已确认"))
+
         case .inputting, .inputEnd:
             let peer = upsertPeer(packet: packet, ipAddress: ipAddress)
             emit(.peerUpdated(peer))
@@ -581,15 +619,35 @@ final class DefaultChatRepository: ChatRepository {
             if !imageIDs.isEmpty {
                 guard pendingInlineMessages.count < 128 else {
                     emit(.log("待接收图片消息过多，请稍后重试"))
+                    emit(.messageReceived(message: ChatMessage(
+                        direction: .incoming, text: text + "\n[图片接收队列已满，请对方稍后重发]",
+                        senderName: peer.displayName, recipientName: currentIdentity.nickname
+                    ), peer: peer))
                     return
                 }
-                pendingInlineMessages[packetKey] = PendingInlineMessage(
+                let messageID = UUID()
+                let pending = PendingInlineMessage(
+                    id: messageID,
                     peer: peer,
                     text: FeiQMessageFormatter.displayText(FeiQInlineImageCodec.replacingMarkers(in: packet.additionalText, with: "")),
                     recipient: currentIdentity.nickname, imageIDs: imageIDs, date: Date())
+                pendingInlineMessages[packetKey] = pending
+                emit(.messageReceived(message: ChatMessage(
+                    id: messageID, direction: .incoming,
+                    text: pending.text + (pending.text.isEmpty ? "" : "\n") + "[图片尚未接收完成]",
+                    senderName: peer.displayName, recipientName: pending.recipient, date: pending.date
+                ), peer: peer))
                 finishInlineMessage(packetKey)
-                attachmentQueue.asyncAfter(deadline: .now() + 90) { [weak self] in
-                    self?.finishInlineMessage(packetKey, timedOut: true)
+                attachmentQueue.asyncAfter(deadline: .now() + inlineImageTimeout) { [weak self] in
+                    guard let self, self.pendingInlineMessages[packetKey]?.id == messageID else { return }
+                    self.finishInlineMessage(packetKey, timedOut: true)
+                }
+                // Retain correlation after the soft timeout so a slow Windows
+                // resend can still replace the same persisted placeholder.
+                attachmentQueue.asyncAfter(deadline: .now() + inlineImageRetention) { [weak self] in
+                    guard let self, self.pendingInlineMessages[packetKey]?.id == messageID else { return }
+                    self.finishInlineMessage(packetKey, timedOut: true, expired: true)
+                    self.pendingInlineMessages.removeValue(forKey: packetKey)
                 }
                 return
             }
@@ -620,22 +678,22 @@ final class DefaultChatRepository: ChatRepository {
                 guard let self else { return }
 
                 switch result {
-                case .success(let attachments):
+                case .success(let downloaded):
                     let incomingMessage = ChatMessage(
                         direction: .incoming,
-                        text: text,
+                        text: text + (downloaded.failedCount > 0
+                            ? "\n[\(downloaded.failedCount) 张图片接收失败，请对方重新发送]" : ""),
                         senderName: peer.displayName,
                         recipientName: currentIdentity.nickname,
-                        attachments: attachments
+                        attachments: downloaded.attachments
                     )
                     self.deliverIncomingMessage(incomingMessage, from: peer)
 
                 case .failure(let error):
                     self.emit(.log("图片接收失败：\(error.localizedDescription)"))
-                    guard !text.isEmpty else { return }
                     let textMessage = ChatMessage(
                         direction: .incoming,
-                        text: text,
+                        text: text + (text.isEmpty ? "" : "\n") + "[图片接收失败，请对方重新发送]",
                         senderName: peer.displayName,
                         recipientName: currentIdentity.nickname
                     )
@@ -659,7 +717,7 @@ final class DefaultChatRepository: ChatRepository {
         _ remoteImages: [FeiQFileAttachment],
         packetNumber: UInt64,
         from ipAddress: String,
-        completion: @escaping (Result<[ChatAttachment], Error>) -> Void
+        completion: @escaping (Result<(attachments: [ChatAttachment], failedCount: Int), Error>) -> Void
     ) {
         do {
             let preparedAttachments = try remoteImages.map {
@@ -702,10 +760,13 @@ final class DefaultChatRepository: ChatRepository {
                 let attachments = downloaded.compactMap { $0 }
                 resultLock.unlock()
 
-                if let error {
+                if let error, attachments.isEmpty {
                     completion(.failure(error))
                 } else {
-                    completion(.success(attachments))
+                    if let error {
+                        self.emit(.log("部分图片附件下载失败，保留已完成图片：\(error.localizedDescription)"))
+                    }
+                    completion(.success((attachments, preparedAttachments.count - attachments.count)))
                 }
             }
         } catch {
@@ -715,14 +776,12 @@ final class DefaultChatRepository: ChatRepository {
 
     private func deliverIncomingMessage(
         _ incomingMessage: ChatMessage,
-        from peer: FeiQPeer
+        from peer: FeiQPeer,
+        updatingDirectMessage: Bool = false
     ) {
-        emit(
-            .messageReceived(
-                message: incomingMessage,
-                peer: peer
-            )
-        )
+        emit(updatingDirectMessage
+             ? .messageUpdated(message: incomingMessage, peer: peer)
+             : .messageReceived(message: incomingMessage, peer: peer))
 
         let matchingGroups = stateQueue.sync {
             groupsByID.values
@@ -780,19 +839,48 @@ final class DefaultChatRepository: ChatRepository {
         }
     }
 
-    private func finishInlineMessage(_ key: String, timedOut: Bool = false) {
-        guard let pending = pendingInlineMessages[key] else { return }
+    private func finishInlineMessage(_ key: String, timedOut: Bool = false, expired: Bool = false) {
+        guard var pending = pendingInlineMessages[key] else { return }
+        let wasTimedOut = pending.timedOut
+        pending.timedOut = pending.timedOut || timedOut
         var seen = Set<String>()
         let ids = pending.imageIDs.filter { seen.insert($0).inserted }
-        let attachments = ids.compactMap { receivedInlineImages[pending.peer.ipAddress + "/" + $0]?.attachment }
-        guard timedOut || attachments.count == ids.count else { return }
-        pendingInlineMessages.removeValue(forKey: key)
+        for id in ids {
+            if let image = receivedInlineImages[pending.peer.ipAddress + "/" + id]?.attachment {
+                pending.attachments[id] = image
+                pending.failedImageIDs.remove(id)
+            }
+        }
+        let attachments = ids.compactMap { pending.attachments[$0] }
         let missing = attachments.count != ids.count
-        let text = pending.text + (missing ? "\n[图片接收不完整，请对方重新发送]" : "")
-        deliverIncomingMessage(ChatMessage(direction: .incoming, text: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                                           senderName: pending.peer.displayName, recipientName: pending.recipient,
-                                           date: pending.date, attachments: attachments), from: pending.peer)
-        if missing { emit(.log("来自 \(pending.peer.displayName) 的图片接收超时")) }
+        let status: String
+        if !missing {
+            status = ""
+        } else if expired {
+            status = "\n[图片接收已超时，请对方重新发送]"
+        } else if !pending.failedImageIDs.isEmpty {
+            status = "\n[部分图片无法解码，请对方重新发送]"
+        } else if pending.timedOut {
+            status = "\n[图片接收不完整，请对方重新发送；稍后到达的图片会自动补全]"
+        } else {
+            status = "\n[图片尚未接收完成 \(attachments.count)/\(ids.count)]"
+        }
+        let message = ChatMessage(
+            id: pending.id, direction: .incoming,
+            text: (pending.text + status).trimmingCharacters(in: .whitespacesAndNewlines),
+            senderName: pending.peer.displayName, recipientName: pending.recipient,
+            date: pending.date, attachments: attachments
+        )
+        if missing {
+            pendingInlineMessages[key] = pending
+            emit(.messageUpdated(message: message, peer: pending.peer))
+        } else {
+            pendingInlineMessages.removeValue(forKey: key)
+            deliverIncomingMessage(message, from: pending.peer, updatingDirectMessage: true)
+        }
+        if missing, timedOut, !wasTimedOut {
+            emit(.log("来自 \(pending.peer.displayName) 的图片接收超时：\(attachments.count)/\(ids.count)，保留关联等待晚到分片"))
+        }
     }
 
     private func relayIncomingGroupMessage(

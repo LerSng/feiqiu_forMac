@@ -185,8 +185,18 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
     }
 
     func saveInlineImage(_ data: Data, imageID: String, isBitmap: Bool) throws -> ChatAttachment {
-        let encoded = isBitmap ? try Self.bitmapFile(from: data) : data
-        let jpeg = try Self.jpegData(from: encoded)
+        guard !data.isEmpty, data.count <= FeiQInlineImageCodec.maximumBytes else {
+            throw ChatAttachmentStorageError.invalidFileSize
+        }
+        // The bitmap flag differs across clients and image sources. Prefer
+        // an actual image container (JPEG/PNG/BMP), then a validated raw DIB.
+        // Do not reject a decodable JPEG solely because bitmapFlag is 1.
+        let jpeg: Data
+        if let decoded = try? Self.jpegData(from: data) {
+            jpeg = decoded
+        } else {
+            jpeg = try Self.jpegData(from: Self.bitmapFile(from: data))
+        }
         let descriptor = FeiQFileAttachment(fileID: imageID, fileName: "\(imageID).jpg",
                                             fileSize: Int64(jpeg.count), modifiedAt: Int64(Date().timeIntervalSince1970), fileAttributes: 1)
         let attachment = try prepareIncomingImage(for: descriptor)
@@ -227,13 +237,18 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
             (0..<4).reduce(0) { $0 | (Int(dib[offset + $1]) << ($1 * 8)) }
         }
         let headerSize = uint32(0)
-        guard [40, 108, 124].contains(headerSize), dib.count >= headerSize else {
+        guard [40, 52, 56, 108, 124].contains(headerSize), dib.count >= headerSize else {
             throw ChatAttachmentStorageError.unsupportedImage
         }
         let bitCount = Int(dib[14]) | Int(dib[15]) << 8
         let compression = uint32(16)
+        guard [1, 4, 8, 16, 24, 32].contains(bitCount),
+              dib[12] == 1, dib[13] == 0,
+              [0, 3, 6].contains(compression) else {
+            throw ChatAttachmentStorageError.unsupportedImage
+        }
         let colors = uint32(32) > 0 ? uint32(32) : (bitCount <= 8 ? 1 << bitCount : 0)
-        let masks = headerSize == 40 && compression == 3 ? 12 : 0
+        let masks = headerSize == 40 ? (compression == 3 ? 12 : (compression == 6 ? 16 : 0)) : 0
         let offset = 14 + headerSize + masks + colors * 4
         guard offset <= dib.count + 14 else { throw ChatAttachmentStorageError.unsupportedImage }
         var header = Data([0x42, 0x4d])

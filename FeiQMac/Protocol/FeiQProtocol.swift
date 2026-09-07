@@ -23,6 +23,8 @@ enum FeiQCommand: UInt32, Sendable {
     /// FeiQ private typing notification commands used by FeiQ 2013.
     case inputting = 0x00000079
     case inputEnd = 0x0000007A
+    case shake = 0x000000D1
+    case shakeAcknowledgement = 0x000000D2
     /// Some FeiQ 2013 builds use the private 0x77/0x78 pair for inline
     /// image chunks and their acknowledgements instead of 0xC0/0xC1.
     case legacyInlineImage = 0x00000077
@@ -56,6 +58,8 @@ enum FeiQCommand: UInt32, Sendable {
         case getDirectoryFiles.rawValue: return .getDirectoryFiles
         case inputting.rawValue: return .inputting
         case inputEnd.rawValue: return .inputEnd
+        case shake.rawValue: return .shake
+        case shakeAcknowledgement.rawValue: return .shakeAcknowledgement
         case legacyInlineImage.rawValue: return .legacyInlineImage
         case legacyInlineImageAcknowledgement.rawValue: return .legacyInlineImageAcknowledgement
         case inlineImage.rawValue: return .inlineImage
@@ -77,6 +81,7 @@ enum FeiQMessageFormatter {
     struct CompatibleEmoticon: Hashable, Sendable {
         let code: String
         let emoji: String
+        let title: String
     }
 
     private static let fontDirectiveRegex = try? NSRegularExpression(
@@ -84,34 +89,129 @@ enum FeiQMessageFormatter {
         options: [.caseInsensitive]
     )
 
-    // FeiQ 2013 writes built-in expressions as ASCII text codes. The first
-    // code (/:)) and the named codes below are confirmed by feiqiu-README.md.
-    // macOS renders their closest native emoji, while the original code is
-    // sent back to Windows so FeiQ can render its bundled GIF.
-    private static let compatibleEmoticons: [CompatibleEmoticon] = [
-        CompatibleEmoticon(code: "/:)", emoji: "🙂"),
-        CompatibleEmoticon(code: "/<rotate>", emoji: "🔄"),
-        CompatibleEmoticon(code: "/:baoquan", emoji: "✊"),
-        CompatibleEmoticon(code: "/:love", emoji: "❤️"),
-
-        // Keep the codes from older builds for backward compatibility with
-        // messages already stored by previous versions of FeiQ Mac.
-        CompatibleEmoticon(code: "/:fd", emoji: "😶"),
-        CompatibleEmoticon(code: "/:cajole", emoji: "🥺"),
-        CompatibleEmoticon(code: "/:o", emoji: "😮")
+    // Wire codes: zyqg/feiq-android FeiqEmoticons.kt (8314e26), referenced
+    // by feiqiu-README.md. Emoji are macOS approximations of Windows GIFs.
+    static let compatibleEmoticons: [CompatibleEmoticon] = [
+        CompatibleEmoticon(code: "/:)", emoji: "🙂", title: "微笑"),
+        CompatibleEmoticon(code: "/:~", emoji: "😖", title: "撇嘴"),
+        CompatibleEmoticon(code: "/:*", emoji: "😍", title: "色"),
+        CompatibleEmoticon(code: "/:|", emoji: "😶", title: "发呆"),
+        CompatibleEmoticon(code: "/8-)", emoji: "😎", title: "得意"),
+        CompatibleEmoticon(code: "/:<", emoji: "🥲", title: "流泪"),
+        CompatibleEmoticon(code: "/:$", emoji: "😊", title: "害羞"),
+        CompatibleEmoticon(code: "/:X", emoji: "🤐", title: "闭嘴"),
+        CompatibleEmoticon(code: "/:Z", emoji: "😴", title: "睡"),
+        CompatibleEmoticon(code: "/:'(", emoji: "😭", title: "大哭"),
+        CompatibleEmoticon(code: "/:-|", emoji: "😅", title: "尴尬"),
+        CompatibleEmoticon(code: "/:@", emoji: "😡", title: "发怒"),
+        CompatibleEmoticon(code: "/:P", emoji: "😛", title: "调皮"),
+        CompatibleEmoticon(code: "/:D", emoji: "😁", title: "呲牙"),
+        CompatibleEmoticon(code: "/:O", emoji: "😮", title: "惊讶"),
+        CompatibleEmoticon(code: "/<rotate>", emoji: "🔄", title: "旋转"),
+        CompatibleEmoticon(code: "/:(", emoji: "😞", title: "难过"),
+        CompatibleEmoticon(code: "/:+", emoji: "😏", title: "酷"),
+        CompatibleEmoticon(code: "/:lenhan", emoji: "😰", title: "冷汗"),
+        CompatibleEmoticon(code: "/:Q", emoji: "😱", title: "抓狂"),
+        CompatibleEmoticon(code: "/:T", emoji: "🤮", title: "吐"),
+        CompatibleEmoticon(code: "/;P", emoji: "🤭", title: "偷笑"),
+        CompatibleEmoticon(code: "/;-D", emoji: "😌", title: "可爱"),
+        CompatibleEmoticon(code: "/;d", emoji: "🙄", title: "白眼"),
+        CompatibleEmoticon(code: "/;o", emoji: "😤", title: "傲慢"),
+        CompatibleEmoticon(code: "/:g", emoji: "😋", title: "饥饿"),
+        CompatibleEmoticon(code: "/|-)", emoji: "😪", title: "困"),
+        CompatibleEmoticon(code: "/:!", emoji: "😨", title: "惊恐"),
+        CompatibleEmoticon(code: "/:L", emoji: "😓", title: "流汗"),
+        CompatibleEmoticon(code: "/:>", emoji: "😆", title: "憨笑"),
+        CompatibleEmoticon(code: "/;bin", emoji: "🪖", title: "大兵"),
+        CompatibleEmoticon(code: "/:fw", emoji: "💪", title: "奋斗"),
+        CompatibleEmoticon(code: "/;fd", emoji: "🤬", title: "咒骂"),
+        CompatibleEmoticon(code: "/:-S", emoji: "🤔", title: "疑问"),
+        CompatibleEmoticon(code: "/;?", emoji: "🤫", title: "嘘"),
+        CompatibleEmoticon(code: "/;x", emoji: "😵", title: "晕"),
+        CompatibleEmoticon(code: "/;@", emoji: "😩", title: "折磨"),
+        CompatibleEmoticon(code: "/:8", emoji: "😈", title: "衰"),
+        CompatibleEmoticon(code: "/;!", emoji: "💀", title: "骷髅"),
+        CompatibleEmoticon(code: "/!!!", emoji: "🔨", title: "敲打"),
+        CompatibleEmoticon(code: "/:xx", emoji: "👋", title: "再见"),
+        CompatibleEmoticon(code: "/:bye", emoji: "🙋", title: "告别"),
+        CompatibleEmoticon(code: "/:csweat", emoji: "🥵", title: "擦汗"),
+        CompatibleEmoticon(code: "/:knose", emoji: "👃", title: "挖鼻"),
+        CompatibleEmoticon(code: "/:applause", emoji: "👏", title: "鼓掌"),
+        CompatibleEmoticon(code: "/:cdale", emoji: "😳", title: "糗大了"),
+        CompatibleEmoticon(code: "/:huaixiao", emoji: "😼", title: "坏笑"),
+        CompatibleEmoticon(code: "/:shake", emoji: "🤷", title: "摇头"),
+        CompatibleEmoticon(code: "/:lhenhen", emoji: "😒", title: "左哼哼"),
+        CompatibleEmoticon(code: "/:rhenhen", emoji: "😾", title: "右哼哼"),
+        CompatibleEmoticon(code: "/:yawn", emoji: "🥱", title: "哈欠"),
+        CompatibleEmoticon(code: "/:snooty", emoji: "😑", title: "鄙视"),
+        CompatibleEmoticon(code: "/:chagrin", emoji: "😣", title: "委屈"),
+        CompatibleEmoticon(code: "/:kcry", emoji: "😢", title: "快哭了"),
+        CompatibleEmoticon(code: "/:yinxian", emoji: "🦊", title: "阴险"),
+        CompatibleEmoticon(code: "/:qinqin", emoji: "😘", title: "亲亲"),
+        CompatibleEmoticon(code: "/:xiaren", emoji: "😬", title: "吓人"),
+        CompatibleEmoticon(code: "/:kelin", emoji: "🥹", title: "可怜"),
+        CompatibleEmoticon(code: "/:caidao", emoji: "🔪", title: "菜刀"),
+        CompatibleEmoticon(code: "/:xig", emoji: "🍉", title: "西瓜"),
+        CompatibleEmoticon(code: "/:bj", emoji: "🍺", title: "啤酒"),
+        CompatibleEmoticon(code: "/:basketball", emoji: "🏀", title: "篮球"),
+        CompatibleEmoticon(code: "/:pingpong", emoji: "🏓", title: "乒乓"),
+        CompatibleEmoticon(code: "/:jump", emoji: "🕺", title: "跳跳"),
+        CompatibleEmoticon(code: "/:coffee", emoji: "☕", title: "咖啡"),
+        CompatibleEmoticon(code: "/:eat", emoji: "🍚", title: "饭"),
+        CompatibleEmoticon(code: "/:pig", emoji: "🐷", title: "猪头"),
+        CompatibleEmoticon(code: "/:rose", emoji: "🌹", title: "玫瑰"),
+        CompatibleEmoticon(code: "/:fade", emoji: "🥀", title: "凋谢"),
+        CompatibleEmoticon(code: "/:kiss", emoji: "💋", title: "示爱"),
+        CompatibleEmoticon(code: "/:heart", emoji: "💗", title: "爱心"),
+        CompatibleEmoticon(code: "/:break", emoji: "💔", title: "心碎"),
+        CompatibleEmoticon(code: "/:cake", emoji: "🎂", title: "蛋糕"),
+        CompatibleEmoticon(code: "/:shd", emoji: "⚡", title: "闪电"),
+        CompatibleEmoticon(code: "/:bomb", emoji: "💣", title: "炸弹"),
+        CompatibleEmoticon(code: "/:dao", emoji: "🗡️", title: "刀"),
+        CompatibleEmoticon(code: "/:footb", emoji: "⚽", title: "足球"),
+        CompatibleEmoticon(code: "/:piaocon", emoji: "🐞", title: "瓢虫"),
+        CompatibleEmoticon(code: "/:shit", emoji: "💩", title: "便便"),
+        CompatibleEmoticon(code: "/:oh", emoji: "🆗", title: "哦"),
+        CompatibleEmoticon(code: "/:moon", emoji: "🌙", title: "月亮"),
+        CompatibleEmoticon(code: "/:sun", emoji: "☀️", title: "太阳"),
+        CompatibleEmoticon(code: "/;gift", emoji: "🎁", title: "礼物"),
+        CompatibleEmoticon(code: "/:hug", emoji: "🤗", title: "拥抱"),
+        CompatibleEmoticon(code: "/:strong", emoji: "👍", title: "强"),
+        CompatibleEmoticon(code: "/;weak", emoji: "👎", title: "弱"),
+        CompatibleEmoticon(code: "/:share", emoji: "🤝", title: "握手"),
+        CompatibleEmoticon(code: "/:shl", emoji: "✌️", title: "胜利"),
+        CompatibleEmoticon(code: "/:baoquan", emoji: "✊", title: "抱拳"),
+        CompatibleEmoticon(code: "/:cajole", emoji: "🥺", title: "撒娇"),
+        CompatibleEmoticon(code: "/:quantou", emoji: "👊", title: "拳头"),
+        CompatibleEmoticon(code: "/:chajin", emoji: "🤙", title: "差劲"),
+        CompatibleEmoticon(code: "/:aini", emoji: "🤟", title: "爱你"),
+        CompatibleEmoticon(code: "/:sayno", emoji: "🙅", title: "不"),
+        CompatibleEmoticon(code: "/:sayok", emoji: "👌", title: "好的"),
+        CompatibleEmoticon(code: "/:love", emoji: "❤️", title: "爱情"),
     ]
 
-    private static let feiQEmojiByCode: [String: String] = Dictionary(
-        uniqueKeysWithValues: compatibleEmoticons.map { ($0.code, $0.emoji) }
+    private static let feiQEmojiByCode: [String: String] = {
+        var result = Dictionary(uniqueKeysWithValues: compatibleEmoticons.map { ($0.code, $0.emoji) })
+        result["/:fd"] = "😶"
+        result["/:o"] = "😮"
+        return result
+    }()
+
+    private static let feiQCodeByEmoji = Dictionary(
+        uniqueKeysWithValues: compatibleEmoticons.map { (normalizedEmoji($0.emoji), $0.code) }
     )
 
-    private static let feiQCodeByEmoji: [String: String] = Dictionary(
-        uniqueKeysWithValues: compatibleEmoticons.map { ($0.emoji, $0.code) }
-    )
+    private static let orderedCodes = feiQEmojiByCode.sorted { $0.key.count > $1.key.count }
 
-    /// Expressions that FeiQ Windows can render natively. The picker uses
-    /// this list instead of presenting Unicode-only expressions as if they
-    /// were FeiQ-compatible.
+    private static func normalizedEmoji(_ emoji: String) -> String {
+        // Text/emoji presentation selectors and skin tones do not have
+        // separate FeiQ GIFs. Keep ZWJ sequences intact to avoid partial codes.
+        String(String.UnicodeScalarView(emoji.unicodeScalars.filter {
+            $0.value != 0xFE0E && $0.value != 0xFE0F
+                && !(0x1F3FB...0x1F3FF).contains($0.value)
+        }))
+    }
+
     static let feiQCompatibleEmojis = compatibleEmoticons.map(\.emoji)
 
     /// Removes FeiQ inline font metadata while preserving the actual text
@@ -135,7 +235,7 @@ enum FeiQMessageFormatter {
         // emoticon, so remove formatting first and decode the remaining
         // FeiQ tokens afterwards. Longest codes are replaced first so a
         // future named code cannot be partially consumed by an alias.
-        for (code, emoji) in feiQEmojiByCode.sorted(by: { $0.key.count > $1.key.count }) {
+        for (code, emoji) in orderedCodes {
             result = result.replacingOccurrences(of: code, with: emoji)
         }
 
@@ -148,11 +248,10 @@ enum FeiQMessageFormatter {
     static func wireText(_ text: String) -> String {
         guard !text.isEmpty else { return "" }
 
-        var result = text
-        for (emoji, code) in feiQCodeByEmoji.sorted(by: { $0.key.count > $1.key.count }) {
-            result = result.replacingOccurrences(of: emoji, with: code)
-        }
-        return result
+        return text.map { character in
+            let original = String(character)
+            return feiQCodeByEmoji[normalizedEmoji(original)] ?? original
+        }.joined()
     }
 }
 

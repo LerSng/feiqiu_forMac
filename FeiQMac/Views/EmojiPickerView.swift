@@ -2,111 +2,43 @@
 //  EmojiPickerView.swift
 //  FeiQMac
 //
-//  提供飞秋兼容表情和 Unicode 表情的选择面板。
+//  从 ViewModel 获取飞秋兼容码表，选择可与 Windows 飞秋互通的表情。
 //
 
 import SwiftUI
 
 struct EmojiPickerView: View {
+    @EnvironmentObject private var model: ChatViewModel
     let onSelect: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("选择表情", systemImage: "face.smiling")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(FeiQUI.accent)
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(EmojiCategory.catalog) { category in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(category.title)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-
-                            LazyVGrid(
-                                columns: [
-                                    GridItem(.adaptive(minimum: 34, maximum: 44), spacing: 4)
-                                ],
-                                spacing: 4
-                            ) {
-                                ForEach(category.emojis, id: \.self) { emoji in
-                                    Button {
-                                        onSelect(emoji)
-                                    } label: {
-                                        Text(emoji)
-                                            .font(.system(size: 25))
-                                            .frame(width: 34, height: 34)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .contentShape(Rectangle())
-                                }
-                            }
+            Label("飞秋表情", systemImage: "face.smiling")
+                .font(.headline)
+            Text("Mac 显示对应 emoji，Windows 显示飞秋原生表情")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ScrollView(showsIndicators: false) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 34), spacing: 4)], spacing: 8) {
+                    ForEach(model.compatibleEmoticons, id: \.code) { item in
+                        Button {
+                            onSelect(item.emoji)
+                        } label: {
+                            Text(item.emoji)
+                                .font(.system(size: 25))
+                                .frame(width: 34, height: 34)
                         }
-                        .padding(9)
-                        .feiQSurface(fill: FeiQUI.subtleFill, cornerRadius: 12)
+                        .buttonStyle(.plain)
+                        .help(item.title)
+                        .accessibilityLabel(item.title)
                     }
                 }
+                .padding(4)
             }
-            .autoHidingScrollIndicators()
+            .hiddenScrollIndicators()
         }
         .padding(15)
         .background(FeiQUI.chatBackground)
-        .frame(width: 310, height: 360)
+        .frame(width: 330, height: 360)
     }
-}
-
-private struct EmojiCategory: Identifiable {
-    let id: String
-    let title: String
-    let emojis: [String]
-
-    static let catalog = [
-        EmojiCategory(
-            id: "feiQCompatible",
-            title: "飞秋兼容（Windows）",
-            // These expressions are converted back to FeiQ text codes by
-            // the network formatter before the packet is sent.
-            emojis: ["🙂", "🔄", "✊", "❤️", "😶", "🥺", "😮"]
-        ),
-        EmojiCategory(
-            id: "faces",
-            title: "其他表情（Unicode）",
-            emojis: [
-                "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣",
-                "😊", "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰",
-                "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜",
-                "🤪", "🤨", "🧐", "🤓", "😎", "🤩", "🥳", "😏",
-                "😒", "😞", "😔", "😟", "😕", "🙁", "☹️", "😣",
-                "😖", "😫", "😩", "😢", "😭", "😤", "😠",
-                "😡", "🤬", "🤗", "🤔", "🤭", "🤫", "🤥",
-                "😐", "😑", "😬", "🙄", "😯", "😦", "😧",
-                "😲", "🥱", "😴", "🤤", "😪", "😵", "🤐", "🥴",
-                "🤢", "🤮", "🤧", "😷", "🤒", "🤕", "🤑", "🤠"
-            ]
-        ),
-        EmojiCategory(
-            id: "gestures",
-            title: "手势与人物",
-            emojis: [
-                "👋", "🤚", "🖐️", "✋", "🖖", "👌", "🤏", "✌️",
-                "🤞", "🤟", "🤘", "🤙", "👈", "👉", "👆", "👇",
-                "☝️", "👍", "👎", "✊", "👊", "🤝", "🙏", "👏",
-                "🙌", "👐", "💪", "👀", "👂", "👃", "👶", "🧒",
-                "👦", "👧", "🧑", "👨", "👩", "🧓", "👴", "👵"
-            ]
-        ),
-        EmojiCategory(
-            id: "objects",
-            title: "物品与符号",
-            emojis: [
-                "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍",
-                "🤎", "💔", "❣️", "💕", "💞", "💓", "💗", "💖",
-                "💘", "💝", "💟", "🔥", "✨", "⭐", "🌟", "💫",
-                "🎉", "🎊", "✅", "❌", "⚠️", "❗", "❓", "💯",
-                "☀️", "🌈", "☁️", "☕", "🍎", "🍉", "🍔", "🍕",
-                "⚽", "🏀", "🎵", "🎶", "🎁", "📌", "💡", "🚀"
-            ]
-        )
-    ]
 }

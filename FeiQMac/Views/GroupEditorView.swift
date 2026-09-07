@@ -84,7 +84,7 @@ struct GroupEditorView: View {
             .feiQSurface(fill: FeiQUI.inputBackground, cornerRadius: 10)
             .padding(.top, 10)
 
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 4) {
                     if availablePeers.isEmpty {
                         Text("暂无可加入的局域网联系人")
@@ -109,7 +109,7 @@ struct GroupEditorView: View {
                 }
                 .padding(.vertical, 8)
             }
-            .autoHidingScrollIndicators()
+            .hiddenScrollIndicators()
             .frame(maxHeight: 330)
 
             Divider()

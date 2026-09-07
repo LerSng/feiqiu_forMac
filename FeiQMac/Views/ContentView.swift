@@ -13,13 +13,14 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView()
-                .navigationSplitViewColumnWidth(min: 310, ideal: 340, max: 420)
+                .navigationSplitViewColumnWidth(min: 260, ideal: 290, max: 360)
         } detail: {
             ChatDetailView()
         }
         .navigationSplitViewStyle(.balanced)
         .tint(FeiQUI.accent)
         .background(FeiQUI.windowBackground)
+        .background(WindowShakeView(eventID: model.windowShakeID))
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -29,17 +30,13 @@ struct ContentView: View {
                 }
                 .help("发送一次局域网发现广播")
 
-                Button {
-                    model.showingLogs = true
+                Menu {
+                    Button("设置", systemImage: "gearshape") { model.showingSettings = true }
+                    Button("网络日志", systemImage: "waveform.path.ecg") { model.showingLogs = true }
                 } label: {
-                    Label("网络日志", systemImage: "list.bullet.rectangle")
+                    Label("应用选项", systemImage: "ellipsis.circle")
                 }
-
-                Button {
-                    model.showingSettings = true
-                } label: {
-                    Label("设置", systemImage: "gearshape")
-                }
+                .help("设置与网络日志")
             }
         }
         .sheet(isPresented: $model.showingSettings) {

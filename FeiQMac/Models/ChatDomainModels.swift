@@ -70,7 +70,9 @@ struct ChatReceivedFile: Identifiable, Hashable, Sendable {
 enum ChatRepositoryEvent: Sendable {
     case peerUpdated(FeiQPeer)
     case peerTyping(peer: FeiQPeer, isTyping: Bool)
+    case peerShook(FeiQPeer)
     case messageReceived(message: ChatMessage, peer: FeiQPeer)
+    case messageUpdated(message: ChatMessage, peer: FeiQPeer)
     case groupMessageReceived(message: ChatMessage, group: ChatGroup)
     case networkStateChanged(Bool)
     case log(String)

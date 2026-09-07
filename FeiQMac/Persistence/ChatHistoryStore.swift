@@ -54,6 +54,7 @@ final class ChatHistoryStore {
         label: "com.local.feiqmac.chat-history",
         qos: .utility
     )
+    private let queueKey = DispatchSpecificKey<UInt8>()
     private let databaseURL: URL
     private let legacyURL: URL
     private var database: OpaquePointer?
@@ -68,6 +69,7 @@ final class ChatHistoryStore {
         self.legacyURL = legacyURL
         self.database = nil
         self.initializationError = nil
+        queue.setSpecific(key: queueKey, value: 1)
 
         do {
             try FileManager.default.createDirectory(
@@ -85,11 +87,17 @@ final class ChatHistoryStore {
     }
 
     deinit {
-        queue.sync {
-            if let database {
-                sqlite3_close(database)
-                self.database = nil
-            }
+        // A queued write can own the last reference. Synchronizing onto
+        // that same queue during deinit would trigger a libdispatch trap.
+        let connection = database
+        database = nil
+        let close = {
+            if let connection { sqlite3_close(connection) }
+        }
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            close()
+        } else {
+            queue.sync(execute: close)
         }
     }
 
@@ -840,11 +848,15 @@ final class ChatHistoryStore {
     private func insertMessage(_ message: ChatMessage, conversationID: String) throws {
         let statement = try prepare(
             """
-            INSERT OR IGNORE INTO messages (
+            INSERT INTO messages (
                 id, peer_id, direction, text, sender_name, recipient_name,
                 attachments_json, created_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                text = excluded.text,
+                attachments_json = excluded.attachments_json
+            WHERE messages.peer_id = excluded.peer_id
             """
         )
         defer { sqlite3_finalize(statement) }

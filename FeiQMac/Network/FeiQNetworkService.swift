@@ -30,14 +30,15 @@ enum FeiQFileTransferError: LocalizedError {
         case .fileWriteFailed(let message):
             return "接收文件保存失败：\(message)"
         case .unexpectedEndOfStream(let expected, let received):
-            return "文件传输不完整（需要 \(expected) 字节，实际收到 \(received) 字节）"
+            let hint = received == 0 ? "；TCP 已连接，但对方关闭连接且未返回文件数据，请确认文件仍在对方的发送列表中" : ""
+            return "文件传输不完整（需要 \(expected) 字节，实际收到 \(received) 字节）\(hint)"
         }
     }
 }
 
 protocol FeiQNetworkServiceProtocol: AnyObject {
     var onInlineImage: ((Data, String, Int, FeiQPacket, String) -> Void)? { get set }
-    var onPacket: ((FeiQPacket, String, FeiQTransport) -> Void)? { get set }
+    var onPacket: ((FeiQPacket, String, FeiQTransport, UInt16) -> Void)? { get set }
     var onLog: ((String) -> Void)? { get set }
     var onStateChange: ((Bool) -> Void)? { get set }
 
@@ -62,13 +63,43 @@ protocol FeiQNetworkServiceProtocol: AnyObject {
         to destinationURL: URL,
         completion: @escaping (Result<Void, Error>) -> Void
     )
+    func downloadFile(
+        _ attachment: FeiQFileAttachment,
+        packetNumber: UInt64,
+        from ipAddress: String,
+        port: UInt16,
+        to destinationURL: URL,
+        completion: @escaping (Result<Void, Error>) -> Void
+    )
     func acknowledge(_ packet: FeiQPacket, to ipAddress: String)
+}
+
+extension FeiQNetworkServiceProtocol {
+    /// Older test transports and alternative implementations can continue to
+    /// use the standard port. FeiQ itself may be configured with another
+    /// port, which is why the real service receives the UDP source port.
+    func downloadFile(
+        _ attachment: FeiQFileAttachment,
+        packetNumber: UInt64,
+        from ipAddress: String,
+        port: UInt16,
+        to destinationURL: URL,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        downloadFile(
+            attachment,
+            packetNumber: packetNumber,
+            from: ipAddress,
+            to: destinationURL,
+            completion: completion
+        )
+    }
 }
 
 final class FeiQNetworkService: FeiQNetworkServiceProtocol {
     static let port: UInt16 = 2425
 
-    var onPacket: ((FeiQPacket, String, FeiQTransport) -> Void)?
+    var onPacket: ((FeiQPacket, String, FeiQTransport, UInt16) -> Void)?
     var onInlineImage: ((Data, String, Int, FeiQPacket, String) -> Void)?
     private let imageAssembler = FeiQInlineImageAssembler()
     private var imageSends: [String: FeiQInlineImageSendSession] = [:]
@@ -414,6 +445,24 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         to destinationURL: URL,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
+        downloadFile(
+            attachment,
+            packetNumber: packetNumber,
+            from: ipAddress,
+            port: Self.port,
+            to: destinationURL,
+            completion: completion
+        )
+    }
+
+    func downloadFile(
+        _ attachment: FeiQFileAttachment,
+        packetNumber: UInt64,
+        from ipAddress: String,
+        port: UInt16,
+        to destinationURL: URL,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
         queue.async { [weak self] in
             guard let self else { return }
             guard let fileID = self.numericFileID(attachment.fileID) else {
@@ -422,11 +471,66 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
             }
             let request = FeiQPacket(packetNumber: self.nextPacketNumber(), senderName: self.localName,
                                      senderHost: self.localHost, command: .getFileData,
-                                     additionalText: "\(String(packetNumber, radix: 16)):\(String(fileID, radix: 16)):0:",
-                                     versionIdentifier: self.feiQVersionIdentifier)
+                                     additionalText: "\(String(packetNumber, radix: 16)):\(String(fileID, radix: 16)):0",
+                                     versionIdentifier: "1")
             self.downloadQueue.async {
-                let result = self.downloadFileInternal(attachment, request: request, from: ipAddress, to: destinationURL)
-                completion(result)
+                // Most FeiQ installations use 2425, but some Windows builds
+                // bind the TCP listener to the same port advertised by the
+                // incoming UDP packet. Try that port first, then the standard
+                // port so one misconfigured peer does not block transfers.
+                let firstPort = port == 0 ? Self.port : port
+                let candidatePorts = firstPort == Self.port
+                    ? [Self.port]
+                    : [firstPort, Self.port]
+                var finalResult: Result<Void, Error>?
+
+                for (index, candidatePort) in candidatePorts.enumerated() {
+                    var result: Result<Void, Error> = .failure(
+                        FeiQFileTransferError.connectionFailed("未尝试连接")
+                    )
+                    for attempt in 1...2 {
+                        result = self.downloadFileInternal(
+                            attachment,
+                            request: request,
+                            from: ipAddress,
+                            port: candidatePort,
+                            to: destinationURL
+                        )
+                        finalResult = result
+
+                        if case .success = result {
+                            break
+                        }
+
+                        if case .failure(let error) = result {
+                            self.emitLog(
+                                "TCP ← \(ipAddress):\(candidatePort)：文件 \(attachment.fileName)，请求 \(request.additionalText)，第 \(attempt) 次失败：\(error.localizedDescription)"
+                            )
+                        }
+
+                        if attempt < 2 {
+                            self.emitLog(
+                                "TCP → \(ipAddress):\(candidatePort)：文件接收失败，正在重试（2/2）"
+                            )
+                            usleep(250_000)
+                        }
+                    }
+
+                    if case .success = result {
+                        break
+                    }
+
+                    if index < candidatePorts.count - 1 {
+                        self.emitLog(
+                            "TCP → \(ipAddress):\(candidatePort)：连接失败，正在尝试标准端口 \(Self.port)"
+                        )
+                    }
+                }
+
+                completion(
+                    finalResult
+                        ?? .failure(FeiQFileTransferError.connectionFailed("没有可用的文件传输端口"))
+                )
             }
         }
     }
@@ -986,7 +1090,7 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
             : "局域网广播"
         emitLog("\(transport.rawValue.uppercased()) ← \(ipAddress)：\(commandText) [发送人：\(sender)，收件人：\(recipient)，命令 \(packet.command)，主机 \(host)，版本 \(packet.versionIdentifier)]")
 
-        onPacket?(packet, ipAddress, transport)
+        onPacket?(packet, ipAddress, transport, sourcePort)
     }
 
     // MARK: - Sending
@@ -1102,9 +1206,10 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         _ attachment: FeiQFileAttachment,
         request: FeiQPacket,
         from ipAddress: String,
+        port: UInt16,
         to destinationURL: URL
     ) -> Result<Void, Error> {
-        guard let address = makeIPv4Address(ipAddress) else {
+        guard let address = makeIPv4Address(ipAddress, port: port) else {
             return .failure(FeiQFileTransferError.invalidAddress)
         }
 
@@ -1114,6 +1219,8 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         }
         defer { Darwin.close(descriptor) }
 
+        var noSignal: Int32 = 1
+        _ = setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
         var timeout = timeval(tv_sec: 60, tv_usec: 0)
         _ = withUnsafePointer(to: &timeout) {
             setsockopt(
@@ -1145,9 +1252,18 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
             }
         }
         guard connected == 0 else {
+            let errorCode = errno
+            let systemMessage = String(cString: strerror(errorCode))
+            let hint: String
+            switch errorCode {
+            case EHOSTUNREACH, ENETUNREACH, ECONNREFUSED:
+                hint = "；请检查 Windows 飞秋是否允许 TCP 2425 入站"
+            default:
+                hint = ""
+            }
             return .failure(
                 FeiQFileTransferError.connectionFailed(
-                    String(cString: strerror(errno))
+                    "\(ipAddress):\(port) · \(systemMessage)\(hint)"
                 )
             )
         }
@@ -1159,8 +1275,6 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
                 )
             )
         }
-        _ = Darwin.shutdown(descriptor, SHUT_WR)
-
         do {
             try FileManager.default.createDirectory(
                 at: destinationURL.deletingLastPathComponent(),
@@ -1201,10 +1315,11 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
                 }
 
                 let errorCode = errno
+                if errorCode == EINTR { continue }
                 try? FileManager.default.removeItem(at: destinationURL)
                 return .failure(
                     FeiQFileTransferError.connectionFailed(
-                        String(cString: strerror(errorCode))
+                        "\(String(cString: strerror(errorCode)))（已收到 \(receivedBytes)/\(attachment.fileSize) 字节）"
                     )
                 )
             }
@@ -1268,11 +1383,14 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
 
     // MARK: - Address helpers
 
-    private func makeIPv4Address(_ ipAddress: String) -> sockaddr_in? {
+    private func makeIPv4Address(
+        _ ipAddress: String,
+        port: UInt16 = FeiQNetworkService.port
+    ) -> sockaddr_in? {
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = Self.port.bigEndian
+        address.sin_port = port.bigEndian
         let result = ipAddress.withCString {
             inet_pton(AF_INET, $0, &address.sin_addr)
         }

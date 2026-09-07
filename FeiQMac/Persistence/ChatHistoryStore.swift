@@ -195,6 +195,64 @@ final class ChatHistoryStore {
         }
     }
 
+    func removeImage(
+        attachmentID: String, messageID: UUID, conversationID: String,
+        deleteUnreferencedFile: @escaping (ChatAttachment) throws -> Void,
+        completion: @escaping (Result<ChatMessage, Error>) -> Void
+    ) {
+        queue.async {
+            do {
+                var updatedMessage: ChatMessage?
+                try self.performTransaction {
+                    let statement = try self.prepare("""
+                        SELECT id, direction, text, sender_name, recipient_name,
+                               attachments_json, created_at
+                        FROM messages WHERE id = ? AND peer_id = ?
+                        """)
+                    defer { sqlite3_finalize(statement) }
+                    try self.bindText(messageID.uuidString, at: 1, in: statement)
+                    try self.bindText(conversationID, at: 2, in: statement)
+                    guard sqlite3_step(statement) == SQLITE_ROW else {
+                        throw ChatHistoryStoreError.sqlite("待删除图片的聊天记录不存在")
+                    }
+                    let original = self.message(from: statement)
+                    guard let removed = original.attachments.first(where: { $0.id == attachmentID && $0.isImage }) else {
+                        updatedMessage = original
+                        return
+                    }
+                    let tombstone = try self.prepare(
+                        "INSERT OR IGNORE INTO deleted_message_images(message_id, attachment_id) VALUES (?, ?)"
+                    )
+                    defer { sqlite3_finalize(tombstone) }
+                    try self.bindText(messageID.uuidString, at: 1, in: tombstone)
+                    try self.bindText(attachmentID, at: 2, in: tombstone)
+                    try self.stepDone(tombstone)
+                    let updated = original.removingImages(withIDs: [attachmentID])
+                    try self.insertMessage(updated, conversationID: conversationID)
+                    let references = try self.prepare("""
+                        SELECT 1 FROM messages, json_each(messages.attachments_json) AS attachment
+                        WHERE json_extract(attachment.value, '$.localPath') = ? LIMIT 1
+                        """)
+                    defer { sqlite3_finalize(references) }
+                    try self.bindText(removed.localPath, at: 1, in: references)
+                    let referenceResult = sqlite3_step(references)
+                    if referenceResult == SQLITE_DONE {
+                        try deleteUnreferencedFile(removed)
+                    } else if referenceResult != SQLITE_ROW {
+                        throw ChatHistoryStoreError.databaseUnavailable("无法检查图片引用")
+                    }
+                    updatedMessage = updated
+                }
+                guard let updatedMessage else {
+                    throw ChatHistoryStoreError.sqlite("删除图片失败")
+                }
+                completion(.success(updatedMessage))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
     func setUnreadCount(_ count: Int, for peerID: String) {
         enqueue {
             try self.updateUnreadCount(max(0, count), for: peerID)
@@ -336,6 +394,13 @@ final class ChatHistoryStore {
 
                 CREATE INDEX IF NOT EXISTS idx_messages_peer_time
                     ON messages(peer_id, created_at DESC, id DESC);
+
+                CREATE TABLE IF NOT EXISTS deleted_message_images (
+                    message_id TEXT NOT NULL,
+                    attachment_id TEXT NOT NULL,
+                    PRIMARY KEY(message_id, attachment_id),
+                    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+                );
 
                 CREATE TABLE IF NOT EXISTS store_metadata (
                     key TEXT PRIMARY KEY NOT NULL,
@@ -846,6 +911,19 @@ final class ChatHistoryStore {
     }
 
     private func insertMessage(_ message: ChatMessage, conversationID: String) throws {
+        let deleted = try prepare("SELECT attachment_id FROM deleted_message_images WHERE message_id = ?")
+        defer { sqlite3_finalize(deleted) }
+        try bindText(message.id.uuidString, at: 1, in: deleted)
+        var deletedIDs = Set<String>()
+        var result = sqlite3_step(deleted)
+        while result == SQLITE_ROW {
+            deletedIDs.insert(columnText(deleted, 0))
+            result = sqlite3_step(deleted)
+        }
+        guard result == SQLITE_DONE else {
+            throw ChatHistoryStoreError.sqlite("无法读取图片删除记录")
+        }
+        let message = message.removingImages(withIDs: deletedIDs)
         let statement = try prepare(
             """
             INSERT INTO messages (

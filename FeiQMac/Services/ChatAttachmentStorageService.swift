@@ -18,6 +18,7 @@ protocol ChatAttachmentStorageService: AnyObject {
     func prepareIncomingImage(for descriptor: FeiQFileAttachment) throws -> ChatAttachment
     func prepareIncomingFile(for descriptor: FeiQFileAttachment) throws -> ChatAttachment
     func saveInlineImage(_ data: Data, imageID: String, isBitmap: Bool) throws -> ChatAttachment
+    func deleteManagedImage(_ attachment: ChatAttachment) throws
 }
 
 enum ChatAttachmentStorageError: LocalizedError {
@@ -26,6 +27,7 @@ enum ChatAttachmentStorageError: LocalizedError {
     case sourceFileUnavailable
     case invalidFileSize
     case copyFailed(String)
+    case unsafeDeletion
 
     var errorDescription: String? {
         switch self {
@@ -39,6 +41,8 @@ enum ChatAttachmentStorageError: LocalizedError {
             return "附件为空或超过 2 GB 限制"
         case .copyFailed(let message):
             return "附件保存失败：\(message)"
+        case .unsafeDeletion:
+            return "只能删除应用附件目录中的图片，不能删除原始文件或目录"
         }
     }
 }
@@ -91,6 +95,23 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
             isDirectory: true
         )
         return LocalChatAttachmentStorageService(rootURL: rootURL)
+    }
+
+    func deleteManagedImage(_ attachment: ChatAttachment) throws {
+        let target = attachment.localURL.standardizedFileURL.resolvingSymlinksInPath()
+        let allowedDirectories = [imagesDirectoryURL, filesDirectoryURL].map {
+            $0.standardizedFileURL.resolvingSymlinksInPath()
+        }
+        guard attachment.isImage,
+              allowedDirectories.contains(target.deletingLastPathComponent()) else {
+            throw ChatAttachmentStorageError.unsafeDeletion
+        }
+        guard fileManager.fileExists(atPath: target.path) else { return }
+        let values = try target.resourceValues(forKeys: [.isRegularFileKey])
+        guard values.isRegularFile == true else {
+            throw ChatAttachmentStorageError.unsafeDeletion
+        }
+        try fileManager.removeItem(at: target)
     }
 
     func prepareOutgoingImage(from sourceURL: URL) throws -> ChatAttachment {

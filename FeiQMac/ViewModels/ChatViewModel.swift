@@ -20,7 +20,8 @@ final class ChatViewModel: ObservableObject {
     @Published var selectedGroupID: String?
     @Published var draft = ""
     @Published private(set) var draftAttachments: [ChatAttachment] = []
-    @Published private(set) var isPreparingPastedImage = false
+    @Published private(set) var pendingImageCount = 0
+    @Published var imageSelectionError: String?
     @Published private(set) var isPreparingAttachment = false
     @Published private(set) var isCapturingScreenshot = false
     @Published var searchText = ""
@@ -34,6 +35,7 @@ final class ChatViewModel: ObservableObject {
     @Published var remoteAssistanceRequest: FeiQRemoteAssistanceRequest?
 
     @Published var showingLogs = false
+    @Published var imageDeletionError: String?
     @Published var showingGroupEditor = false
     @Published var editingGroupID: String?
 
@@ -42,12 +44,23 @@ final class ChatViewModel: ObservableObject {
     private var offlineTimer: Timer?
     private var historyRequestGeneration = 0
     private var historyMessageUpdates: [UUID: ChatMessage] = [:]
+    private var deletedImageIDsByMessage: [UUID: Set<String>] = [:]
+    private var deletingImageKeys = Set<String>()
+    private var imagePreparationGeneration = UUID()
     private var typingTimers: [String: DispatchWorkItem] = [:]
     private var localTypingPeerID: String?
     private var localTypingStopWorkItem: DispatchWorkItem?
 
     private static let messagePageSize = 60
     private static let inMemoryMessageLimit = 240
+
+    var isPreparingPastedImage: Bool { pendingImageCount > 0 }
+    var draftImageCount: Int { draftAttachments.filter(\.isImage).count }
+    var maximumAlbumImageCount: Int { ChatAttachmentGroup.maximumImageCount }
+
+    func attachmentGroups(for message: ChatMessage) -> [ChatAttachmentGroup] {
+        ChatAttachmentGroup.makeGroups(from: message.attachments)
+    }
 
     var canSendShake: Bool {
         isRunning && selectedPeer?.isOnline == true && !shakeCoolingDown
@@ -389,6 +402,11 @@ final class ChatViewModel: ObservableObject {
               !isCapturingScreenshot,
               !displayText.isEmpty || !attachments.isEmpty else { return }
 
+        guard draftImageCount <= maximumAlbumImageCount else {
+            imageSelectionError = "每条消息最多合并发送 \(maximumAlbumImageCount) 张照片，请移除多余照片后发送。"
+            return
+        }
+
         stopLocalTyping()
 
         if let peer = selectedPeer {
@@ -432,24 +450,45 @@ final class ChatViewModel: ObservableObject {
     }
 
     func pasteImage(_ data: Data, suggestedFileName: String?) {
-        guard selectedConversationID != nil else { return }
-        isPreparingPastedImage = true
+        guard reserveImageSlots(1) else { return }
+        let generation = imagePreparationGeneration
         repository.preparePastedImage(
             data: data,
             suggestedFileName: suggestedFileName
         ) { [weak self] result in
             DispatchQueue.main.async {
-                guard let self else { return }
-                self.isPreparingPastedImage = false
-                switch result {
-                case .success(let attachment):
-                    guard self.selectedConversationID != nil else { return }
-                    self.draftAttachments.append(attachment)
-                    self.draftDidChange()
-                case .failure(let error):
-                    self.appendLog("粘贴图片失败：\(error.localizedDescription)")
-                }
+                self?.finishPreparingImage(result, generation: generation)
             }
+        }
+    }
+
+    private func reserveImageSlots(_ count: Int) -> Bool {
+        guard selectedConversationID != nil, count > 0 else { return false }
+        let available = maximumAlbumImageCount - draftImageCount - pendingImageCount
+        guard count <= available else {
+            imageSelectionError = "每条消息最多合并 \(maximumAlbumImageCount) 张照片，当前还可添加 \(max(0, available)) 张。"
+            return false
+        }
+        imageSelectionError = nil
+        pendingImageCount += count
+        return true
+    }
+
+    private func finishPreparingImage(_ result: Result<ChatAttachment, Error>, generation: UUID) {
+        guard generation == imagePreparationGeneration, selectedConversationID != nil else {
+            if case .success(let attachment) = result {
+                repository.deleteDraftImage(attachment) { _ in }
+            }
+            return
+        }
+        pendingImageCount = max(0, pendingImageCount - 1)
+        switch result {
+        case .success(let attachment):
+            draftAttachments.append(attachment)
+            draftDidChange()
+        case .failure(let error):
+            imageSelectionError = "图片添加失败：\(error.localizedDescription)"
+            appendLog(imageSelectionError ?? "图片添加失败")
         }
     }
 
@@ -480,61 +519,64 @@ final class ChatViewModel: ObservableObject {
     }
 
     func removeDraftAttachment(_ attachmentID: String) {
+        guard let attachment = draftAttachments.first(where: { $0.id == attachmentID }) else { return }
+        guard attachment.isImage else {
+            draftAttachments.removeAll { $0.id == attachmentID }
+            return
+        }
         draftAttachments.removeAll { $0.id == attachmentID }
+        repository.deleteDraftImage(attachment) { [weak self] result in
+            DispatchQueue.main.async {
+                if case .failure(let error) = result {
+                    self?.imageDeletionError = "草稿已移除，但本地图片清理失败：\(error.localizedDescription)"
+                }
+            }
+        }
     }
 
-    func chooseAndSendImage() {
+    func deleteImage(_ attachmentID: String, from message: ChatMessage, conversationID: String) {
+        let key = message.id.uuidString + ":" + attachmentID
+        guard deletingImageKeys.insert(key).inserted else { return }
+        repository.deleteImage(
+            attachmentID: attachmentID, messageID: message.id, conversationID: conversationID
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.deletingImageKeys.remove(key)
+                switch result {
+                case .success(let updated):
+                    self.deletedImageIDsByMessage[message.id, default: []].insert(attachmentID)
+                    if let index = self.messagesByPeer[conversationID]?.firstIndex(where: { $0.id == message.id }) {
+                        self.messagesByPeer[conversationID]?[index] = updated
+                    }
+                    if self.selectedConversationID == conversationID {
+                        self.historyMessageUpdates[message.id] = updated
+                    }
+                    self.receivedFilesByConversation[conversationID]?.removeAll { $0.id == key }
+                case .failure(let error):
+                    self.deletedImageIDsByMessage[message.id]?.remove(attachmentID)
+                    self.imageDeletionError = error.localizedDescription
+                    self.appendLog("删除图片失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func chooseAndAddImages() {
+        guard selectedConversationID != nil else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.allowedContentTypes = [.image]
-        panel.prompt = "发送图片"
-        panel.message = "选择要发送的图片"
-
-        guard panel.runModal() == .OK,
-              let fileURL = panel.url else {
-            return
-        }
-
-        if let peer = selectedPeer {
-            let conversationID = peer.id
-            repository.sendImage(
-                from: fileURL,
-                to: peer,
-                unreadCount: unreadCount(for: peer.id)
-            ) { [weak self] result in
+        panel.prompt = "添加照片"
+        panel.message = "最多合并发送 \(maximumAlbumImageCount) 张照片，添加后点击发送"
+        guard panel.runModal() == .OK, reserveImageSlots(panel.urls.count) else { return }
+        let generation = imagePreparationGeneration
+        for fileURL in panel.urls {
+            repository.prepareOutgoingImage(from: fileURL) { [weak self] result in
                 DispatchQueue.main.async {
-                    guard let self else { return }
-                    switch result {
-                    case .success(let message):
-                        self.appendMessageToCurrentConversation(
-                            message,
-                            conversationID: conversationID
-                        )
-                    case .failure(let error):
-                        self.appendLog("图片发送失败：\(error.localizedDescription)")
-                    }
-                }
-            }
-        } else if let group = selectedGroup {
-            let conversationID = group.id
-            repository.sendGroupImage(
-                from: fileURL,
-                to: group,
-                members: members(for: group.id)
-            ) { [weak self] result in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    switch result {
-                    case .success(let message):
-                        self.appendMessageToCurrentConversation(
-                            message,
-                            conversationID: conversationID
-                        )
-                    case .failure(let error):
-                        self.appendLog("群聊图片发送失败：\(error.localizedDescription)")
-                    }
+                    self?.finishPreparingImage(result, generation: generation)
                 }
             }
         }
@@ -676,6 +718,7 @@ final class ChatViewModel: ObservableObject {
             receiveDirectMessage(message, from: peer)
 
         case .messageUpdated(let message, let peer):
+            let message = message.removingImages(withIDs: deletedImageIDsByMessage[message.id] ?? [])
             // Completing an existing image is not a new incoming message:
             // keep its position, timestamp, unread count and notification.
             if let index = messagesByPeer[peer.id]?.firstIndex(where: { $0.id == message.id }) {
@@ -765,7 +808,9 @@ final class ChatViewModel: ObservableObject {
         stopLocalTyping()
         draft = ""
         draftAttachments.removeAll()
-        isPreparingPastedImage = false
+        imagePreparationGeneration = UUID()
+        pendingImageCount = 0
+        imageSelectionError = nil
         isPreparingAttachment = false
         isCapturingScreenshot = false
         messagesByPeer.removeAll()
@@ -840,7 +885,13 @@ final class ChatViewModel: ObservableObject {
                     // Do not overwrite attachments received while this
                     // asynchronous history query was in flight.
                     let liveFiles = self.receivedFilesByConversation[conversationID] ?? []
-                    var byID = Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0) })
+                    let visibleFiles = files.filter { file in
+                        !self.deletedImageIDsByMessage.contains { messageID, imageIDs in
+                            file.id == messageID.uuidString + ":" + file.attachment.id
+                                && imageIDs.contains(file.attachment.id)
+                        }
+                    }
+                    var byID = Dictionary(uniqueKeysWithValues: visibleFiles.map { ($0.id, $0) })
                     for file in liveFiles { byID[file.id] = file }
                     self.receivedFilesByConversation[conversationID] = Array(byID.values.sorted {
                         $0.receivedAt == $1.receivedAt

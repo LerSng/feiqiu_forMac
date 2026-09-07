@@ -31,6 +31,10 @@ protocol ChatRepository: AnyObject {
         suggestedFileName: String?,
         completion: @escaping (Result<ChatAttachment, Error>) -> Void
     )
+    func prepareOutgoingImage(
+        from fileURL: URL,
+        completion: @escaping (Result<ChatAttachment, Error>) -> Void
+    )
     func captureScreenshot(
         completion: @escaping (Result<Data, Error>) -> Void
     )
@@ -76,6 +80,11 @@ protocol ChatRepository: AnyObject {
     func savePeer(_ peer: FeiQPeer)
     func saveGroup(_ group: ChatGroup)
     func deleteGroup(_ groupID: String)
+    func deleteImage(
+        attachmentID: String, messageID: UUID, conversationID: String,
+        completion: @escaping (Result<ChatMessage, Error>) -> Void
+    )
+    func deleteDraftImage(_ attachment: ChatAttachment, completion: @escaping (Result<Void, Error>) -> Void)
     func restorePeers(_ peers: [FeiQPeer])
     func restoreGroups(_ groups: [ChatGroup])
     func markOfflinePeers(before cutoff: Date)
@@ -131,7 +140,7 @@ final class DefaultChatRepository: ChatRepository {
         let peer: FeiQPeer
         let text: String
         let recipient: String
-        let imageIDs: [String]
+        var imageIDs: [String]
         let date: Date
         var timedOut = false
         var attachments: [String: ChatAttachment] = [:]
@@ -167,9 +176,14 @@ final class DefaultChatRepository: ChatRepository {
         self.screenshotService = screenshotService
         self.notificationService = notificationService
 
-        networkService.onPacket = { [weak self] packet, ipAddress, transport in
+        networkService.onPacket = { [weak self] packet, ipAddress, transport, sourcePort in
             self?.attachmentQueue.async { [weak self] in
-                self?.handle(packet: packet, from: ipAddress, transport: transport)
+                self?.handle(
+                    packet: packet,
+                    from: ipAddress,
+                    transport: transport,
+                    sourcePort: sourcePort
+                )
             }
         }
         networkService.onInlineImage = { [weak self] bytes, imageID, bitmapFlag, packet, ipAddress in
@@ -348,6 +362,45 @@ final class DefaultChatRepository: ChatRepository {
             } catch {
                 completion(.failure(error))
             }
+        }
+    }
+
+    func prepareOutgoingImage(
+        from fileURL: URL,
+        completion: @escaping (Result<ChatAttachment, Error>) -> Void
+    ) {
+        attachmentQueue.async { [attachmentStorageService] in
+            completion(Result { try attachmentStorageService.prepareOutgoingImage(from: fileURL) })
+        }
+    }
+
+    func deleteImage(
+        attachmentID: String, messageID: UUID, conversationID: String,
+        completion: @escaping (Result<ChatMessage, Error>) -> Void
+    ) {
+        historyService.removeImage(
+            attachmentID: attachmentID, messageID: messageID, conversationID: conversationID,
+            deleteUnreferencedFile: { [attachmentStorageService] attachment in
+                try attachmentStorageService.deleteManagedImage(attachment)
+            }
+        ) { [weak self] result in
+            guard let self else { return }
+            self.attachmentQueue.async {
+                if case .success = result {
+                    for key in Array(self.pendingInlineMessages.keys) {
+                        guard self.pendingInlineMessages[key]?.id == messageID else { continue }
+                        self.pendingInlineMessages[key]?.imageIDs.removeAll { $0 == attachmentID }
+                        self.pendingInlineMessages[key]?.attachments.removeValue(forKey: attachmentID)
+                    }
+                }
+                completion(result)
+            }
+        }
+    }
+
+    func deleteDraftImage(_ attachment: ChatAttachment, completion: @escaping (Result<Void, Error>) -> Void) {
+        attachmentQueue.async { [attachmentStorageService] in
+            completion(Result { try attachmentStorageService.deleteManagedImage(attachment) })
         }
     }
 
@@ -670,7 +723,8 @@ final class DefaultChatRepository: ChatRepository {
     private func handle(
         packet: FeiQPacket,
         from ipAddress: String,
-        transport: FeiQTransport
+        transport: FeiQTransport,
+        sourcePort: UInt16
     ) {
         let currentIdentity = stateQueue.sync { identity }
 
@@ -826,7 +880,8 @@ final class DefaultChatRepository: ChatRepository {
             downloadIncomingFiles(
                 remoteAttachments,
                 packetNumber: packet.packetNumber,
-                from: ipAddress
+                from: ipAddress,
+                port: sourcePort
             ) { [weak self] result in
                 guard let self else { return }
 
@@ -876,6 +931,7 @@ final class DefaultChatRepository: ChatRepository {
         _ remoteAttachments: [FeiQFileAttachment],
         packetNumber: UInt64,
         from ipAddress: String,
+        port: UInt16,
         completion: @escaping (Result<(attachments: [ChatAttachment], failedCount: Int), Error>) -> Void
     ) {
         var preparedAttachments: [(remote: FeiQFileAttachment, local: ChatAttachment)] = []
@@ -921,6 +977,7 @@ final class DefaultChatRepository: ChatRepository {
                 prepared.remote,
                 packetNumber: packetNumber,
                 from: ipAddress,
+                port: port,
                 to: prepared.local.localURL
             ) { result in
                 resultLock.lock()

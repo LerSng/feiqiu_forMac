@@ -58,16 +58,23 @@ struct FileAttachmentView: View {
     }
 
     private var cardContent: some View {
-        HStack(spacing: 11) {
+        HStack(spacing: 10) {
             fileIcon
             fileDetails
-            Spacer(minLength: 6)
-            statusIcon
+            Spacer(minLength: 4)
+            previewIcon
         }
-        .padding(12)
-        .frame(minWidth: 270, maxWidth: 380, alignment: .leading)
+        .padding(.horizontal, 12)
+        .frame(width: 300, height: 82, alignment: .leading)
         .background(
-            FeiQUI.cardBackground,
+            LinearGradient(
+                colors: [
+                    FeiQUI.cardBackground,
+                    FeiQUI.cardBackground.opacity(0.82)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
             in: RoundedRectangle(cornerRadius: 14, style: .continuous)
         )
         .overlay {
@@ -79,53 +86,63 @@ struct FileAttachmentView: View {
 
     private var fileIcon: some View {
         Image(systemName: attachment.systemImageName)
-            .font(.system(size: 19, weight: .semibold))
+            .font(.system(size: 18, weight: .semibold))
             .foregroundStyle(FeiQUI.accent)
-            .frame(width: 42, height: 42)
+            .frame(width: 38, height: 38)
             .background(
-                FeiQUI.accentSoft,
+                LinearGradient(
+                    colors: [FeiQUI.accentSoft, FeiQUI.accent.opacity(0.08)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
                 in: RoundedRectangle(cornerRadius: 11, style: .continuous)
             )
     }
 
     private var fileDetails: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(attachment.fileName)
-                .font(.subheadline.weight(.semibold))
+                .font(.callout.weight(.semibold))
                 .foregroundStyle(.primary)
-                .lineLimit(2)
+                .lineLimit(1)
                 .truncationMode(.middle)
 
-            Text(metadataDescription)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            Text(attachment.isAvailable ? "点击预览文件" : "文件不可用")
-                .font(.caption2)
-                .foregroundStyle(attachment.isAvailable ? FeiQUI.accent : .orange)
+            HStack(spacing: 6) {
+                Text(attachment.fileSizeDescription)
+                Text("·")
+                Text(fileTypeDescription)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
         }
+        .frame(maxWidth: 205, alignment: .leading)
     }
 
-    private var statusIcon: some View {
+    private var previewIcon: some View {
         Image(systemName: attachment.isAvailable ? "eye" : "exclamationmark.triangle")
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(
-                attachment.isAvailable ? Color.secondary : Color.orange
+                attachment.isAvailable ? FeiQUI.accent : Color.orange
+            )
+            .frame(width: 28, height: 28)
+            .background(
+                (attachment.isAvailable ? FeiQUI.accentSoft : Color.orange.opacity(0.12)),
+                in: Circle()
             )
     }
 
     private var fileTypeDescription: String {
-        if !attachment.mimeType.isEmpty,
-           attachment.mimeType != "application/octet-stream" {
-            return attachment.mimeType
-        }
         let pathExtension = attachment.localURL.pathExtension
-        return pathExtension.isEmpty ? "文件" : pathExtension.uppercased()
-    }
-
-    private var metadataDescription: String {
-        "\(attachment.fileSizeDescription) · \(fileTypeDescription)"
+        if !pathExtension.isEmpty {
+            return pathExtension.uppercased()
+        }
+        guard let mimeSuffix = attachment.mimeType.split(separator: "/").last,
+              !mimeSuffix.isEmpty,
+              attachment.mimeType != "application/octet-stream" else {
+            return "文件"
+        }
+        return String(mimeSuffix).uppercased()
     }
 
     private func openPreview() {

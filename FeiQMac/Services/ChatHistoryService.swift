@@ -25,6 +25,11 @@ protocol ChatHistoryService: AnyObject {
     func savePeer(_ peer: FeiQPeer)
     func saveGroup(_ group: ChatGroup)
     func deleteGroup(_ groupID: String)
+    func removeImage(
+        attachmentID: String, messageID: UUID, conversationID: String,
+        deleteUnreferencedFile: @escaping (ChatAttachment) throws -> Void,
+        completion: @escaping (Result<ChatMessage, Error>) -> Void
+    )
     func saveMessage(
         _ message: ChatMessage,
         for peer: FeiQPeer,
@@ -129,6 +134,17 @@ final class SQLiteChatHistoryService: ChatHistoryService {
 
     func deleteGroup(_ groupID: String) {
         store.deleteGroup(groupID)
+    }
+
+    func removeImage(
+        attachmentID: String, messageID: UUID, conversationID: String,
+        deleteUnreferencedFile: @escaping (ChatAttachment) throws -> Void,
+        completion: @escaping (Result<ChatMessage, Error>) -> Void
+    ) {
+        store.removeImage(
+            attachmentID: attachmentID, messageID: messageID, conversationID: conversationID,
+            deleteUnreferencedFile: deleteUnreferencedFile, completion: completion
+        )
     }
 
     func saveMessage(

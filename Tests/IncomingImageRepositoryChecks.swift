@@ -5,7 +5,7 @@ import Foundation
 private final class TestTransport: FeiQNetworkServiceProtocol {
     var downloadData: Data?
     var onInlineImage: ((Data, String, Int, FeiQPacket, String) -> Void)?
-    var onPacket: ((FeiQPacket, String, FeiQTransport) -> Void)?
+    var onPacket: ((FeiQPacket, String, FeiQTransport, UInt16) -> Void)?
     var onLog: ((String) -> Void)?
     var onStateChange: ((Bool) -> Void)?
     func start(name: String, host: String, group: String) {}
@@ -31,6 +31,20 @@ private final class TestTransport: FeiQNetworkServiceProtocol {
         } else {
             completion(.failure(FeiQFileTransferError.fileNotFound))
         }
+    }
+
+    func downloadFile(
+        _ attachment: FeiQFileAttachment, packetNumber: UInt64,
+        from ipAddress: String, port: UInt16, to destinationURL: URL,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        downloadFile(
+            attachment,
+            packetNumber: packetNumber,
+            from: ipAddress,
+            to: destinationURL,
+            completion: completion
+        )
     }
 }
 
@@ -104,7 +118,7 @@ enum IncomingImageRepositoryChecks {
         let packet = FeiQPacket(packetNumber: 500, senderName: "Win", senderHost: "PC",
                                 command: .sendMessage, additionalText: "前文/~#>11223344<B~")
         let ip = "192.0.2.10"
-        transport.onPacket?(packet, ip, .udp)
+        transport.onPacket?(packet, ip, .udp, 2425)
         let waiting = events.waitFor { $0.text.contains("尚未接收完成") }
         let timeout = events.waitFor { $0.text.contains("接收不完整") }
         precondition(waiting.id == timeout.id, "soft timeout keeps message identity")
@@ -134,8 +148,8 @@ enum IncomingImageRepositoryChecks {
         let second = FeiQPacket(packetNumber: 501, senderName: "Win", senderHost: "PC",
                                 command: .sendMessage, additionalText: "后文/~#>55667788<B~")
         transport.onInlineImage?(dib, "55667788", 1, second, ip)
-        transport.onPacket?(packet, ip, .udp)
-        transport.onPacket?(second, ip, .udp)
+        transport.onPacket?(packet, ip, .udp, 2425)
+        transport.onPacket?(second, ip, .udp, 2425)
         _ = events.waitFor { $0.text == "后文" && $0.attachments.count == 1 }
         precondition(events.snapshot.filter(\.isNew).count == 2, "duplicate marker is not a new message")
 
@@ -149,7 +163,7 @@ enum IncomingImageRepositoryChecks {
                                 command: FeiQCommand.sendMessage.rawValue | FeiQPacket.fileAttachOption,
                                 additionalData: FeiQAttachmentCodec.encode(
                                     message: "多图", attachments: descriptors, preferUTF8: false))
-        transport.onPacket?(partial, ip, .udp)
+        transport.onPacket?(partial, ip, .udp, 2425)
         let partialMessage = events.waitFor { $0.text.contains("1 张图片接收失败") }
         precondition(partialMessage.attachments.count == 1 && partialMessage.attachments[0].isAvailable,
                      "partial file transfer preserves valid image and reports failure")
@@ -175,7 +189,7 @@ enum IncomingImageRepositoryChecks {
                 preferUTF8: false
             )
         )
-        transport.onPacket?(regularPacket, ip, .udp)
+        transport.onPacket?(regularPacket, ip, .udp, 2425)
         let regularMessage = events.waitFor {
             $0.text == "普通文件" && $0.attachments.count == 1
         }
@@ -186,10 +200,89 @@ enum IncomingImageRepositoryChecks {
 
         let broken = FeiQPacket(packetNumber: 502, senderName: "Win", senderHost: "PC",
                                 command: .sendMessage, additionalText: "/~#>aabbccdd<B~")
-        transport.onPacket?(broken, ip, .udp)
+        transport.onPacket?(broken, ip, .udp, 2425)
         transport.onInlineImage?(Data([1, 2, 3]), "aabbccdd", 0, broken, ip)
         _ = events.waitFor { $0.text.contains("无法解码") }
         _ = events.waitFor { $0.text.contains("接收已超时") }
+
+        let originalImage = complete.attachments[0]
+        let sharedMessage = ChatMessage(direction: .outgoing, text: "", attachments: [originalImage])
+        history.saveMessage(sharedMessage, for: peer, unreadCount: 0)
+        repository.deleteImage(attachmentID: originalImage.id, messageID: complete.id, conversationID: peer.id) { result in
+            let updated = try! result.get()
+            precondition(updated.text == "前文" && updated.attachments.isEmpty)
+            precondition(originalImage.isAvailable, "another message still owns this file")
+            saved.signal()
+        }
+        precondition(saved.wait(timeout: .now() + 5) == .success)
+        repository.deleteImage(attachmentID: originalImage.id, messageID: sharedMessage.id, conversationID: peer.id) { result in
+            let updated = try! result.get()
+            precondition(updated.text == "[图片已删除]" && updated.attachments.isEmpty)
+            precondition(!originalImage.isAvailable, "last reference deletes the managed file")
+            saved.signal()
+        }
+        precondition(saved.wait(timeout: .now() + 5) == .success)
+        history.saveMessage(complete, for: peer, unreadCount: 0)
+        history.loadRecentMessages(for: peer.id, limit: 60) { result in
+            let restored = try! result.get().messages.first { $0.id == complete.id }!
+            precondition(restored.attachments.isEmpty, "late updates cannot resurrect a deleted image")
+            saved.signal()
+        }
+        precondition(saved.wait(timeout: .now() + 5) == .success)
+        reopened.loadRecentMessages(for: peer.id, limit: 60) { result in
+            let messages = try! result.get().messages
+            precondition(messages.first { $0.id == complete.id }?.attachments.isEmpty == true)
+            precondition(messages.first { $0.id == sharedMessage.id }?.attachments.isEmpty == true)
+            saved.signal()
+        }
+        precondition(saved.wait(timeout: .now() + 5) == .success)
+
+        let rollbackImage = try storage.saveInlineImage(dib, imageID: "11001100", isBitmap: true)
+        let rollbackMessage = ChatMessage(direction: .incoming, text: "保留", attachments: [rollbackImage])
+        history.saveMessage(rollbackMessage, for: peer, unreadCount: 0)
+        history.removeImage(
+            attachmentID: rollbackImage.id, messageID: rollbackMessage.id, conversationID: peer.id,
+            deleteUnreferencedFile: { _ in throw ChatAttachmentStorageError.unsafeDeletion }
+        ) { result in
+            guard case .failure = result else { preconditionFailure("unlink failure must fail deletion") }
+            saved.signal()
+        }
+        precondition(saved.wait(timeout: .now() + 5) == .success)
+        history.loadRecentMessages(for: peer.id, limit: 60) { result in
+            let restored = try! result.get().messages.first { $0.id == rollbackMessage.id }
+            precondition(restored == rollbackMessage && rollbackImage.isAvailable, "failed deletion rolls back history")
+            saved.signal()
+        }
+        precondition(saved.wait(timeout: .now() + 5) == .success)
+
+        let outsideURL = root.appendingPathComponent("original.jpg")
+        try Data([1, 2, 3]).write(to: outsideURL)
+        let outsideImage = ChatAttachment(
+            id: "outside", kind: .image, fileName: "original.jpg", fileSize: 3,
+            modifiedAt: 0, fileAttributes: 1, localPath: outsideURL.path, mimeType: "image/jpeg"
+        )
+        do {
+            try storage.deleteManagedImage(outsideImage)
+            preconditionFailure("must refuse paths outside managed attachment directories")
+        } catch ChatAttachmentStorageError.unsafeDeletion {}
+        precondition(FileManager.default.fileExists(atPath: outsideURL.path))
+        let linkURL = root.appendingPathComponent("Images/external.jpg")
+        try FileManager.default.createSymbolicLink(at: linkURL, withDestinationURL: outsideURL)
+        let linkedImage = ChatAttachment(
+            id: "link", kind: .image, fileName: "external.jpg", fileSize: 3,
+            modifiedAt: 0, fileAttributes: 1, localPath: linkURL.path, mimeType: "image/jpeg"
+        )
+        do {
+            try storage.deleteManagedImage(linkedImage)
+            preconditionFailure("must refuse symlinks to original files")
+        } catch ChatAttachmentStorageError.unsafeDeletion {}
+        let draftImage = try storage.saveInlineImage(dib, imageID: "22002200", isBitmap: true)
+        repository.deleteDraftImage(draftImage) { result in
+            try! result.get()
+            precondition(!draftImage.isAvailable)
+            saved.signal()
+        }
+        precondition(saved.wait(timeout: .now() + 5) == .success)
         withExtendedLifetime(repository) {}
         print("Incoming image repository checks passed")
     }

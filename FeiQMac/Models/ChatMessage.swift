@@ -19,6 +19,37 @@ enum ChatAttachmentKind: String, Codable, Hashable, Sendable {
     }
 }
 
+struct ChatAttachmentGroup: Identifiable, Equatable {
+    static let maximumImageCount = 9
+
+    let attachments: [ChatAttachment]
+
+    var id: String { attachments.first?.id ?? "" }
+    var isImageGroup: Bool { attachments.first?.isImage == true }
+
+    static func makeGroups(from attachments: [ChatAttachment]) -> [ChatAttachmentGroup] {
+        var groups: [ChatAttachmentGroup] = []
+        var images: [ChatAttachment] = []
+        for attachment in attachments {
+            if attachment.isImage {
+                images.append(attachment)
+                if images.count == maximumImageCount {
+                    groups.append(ChatAttachmentGroup(attachments: images))
+                    images.removeAll(keepingCapacity: true)
+                }
+            } else {
+                if !images.isEmpty {
+                    groups.append(ChatAttachmentGroup(attachments: images))
+                    images.removeAll(keepingCapacity: true)
+                }
+                groups.append(ChatAttachmentGroup(attachments: [attachment]))
+            }
+        }
+        if !images.isEmpty { groups.append(ChatAttachmentGroup(attachments: images)) }
+        return groups
+    }
+}
+
 /// A file descriptor carried by the FeiQ/IP Messenger attachment section.
 /// This is transport metadata and is not persisted as a chat message field.
 struct FeiQFileAttachment: Hashable, Sendable {
@@ -176,5 +207,17 @@ struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
             [ChatAttachment].self,
             forKey: .attachments
         ) ?? []
+    }
+
+    func removingImages(withIDs imageIDs: Set<String>) -> ChatMessage {
+        let remaining = attachments.filter { !($0.isImage && imageIDs.contains($0.id)) }
+        guard remaining.count != attachments.count else { return self }
+        return ChatMessage(
+            id: id, direction: direction,
+            text: remaining.isEmpty && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "[图片已删除]" : text,
+            senderName: senderName, recipientName: recipientName,
+            date: date, attachments: remaining
+        )
     }
 }

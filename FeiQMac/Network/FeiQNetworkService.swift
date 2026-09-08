@@ -6,7 +6,11 @@ enum FeiQTransport: String, Sendable {
     case tcp
 }
 
-enum FeiQFileTransferError: LocalizedError {
+enum FeiQFileTransferError: LocalizedError, Equatable {
+    case cancelled
+    case networkUnavailable
+    case peerDeclined
+    case peerTimedOut
     case invalidAddress
     case socketCreation
     case connectionFailed(String)
@@ -17,6 +21,14 @@ enum FeiQFileTransferError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .cancelled:
+            return "文件传输已取消"
+        case .networkUnavailable:
+            return "局域网服务未启动，请上线后重试"
+        case .peerDeclined:
+            return "对方已取消接收，可重试发送文件通知"
+        case .peerTimedOut:
+            return "对方 5 分钟内未接收文件，请确认对方在线后重试"
         case .invalidAddress:
             return "文件传输地址无效"
         case .socketCreation:
@@ -67,9 +79,56 @@ protocol FeiQNetworkServiceProtocol: FeiQNetworkEventSource {
         completion: @escaping (Result<Void, Error>) -> Void
     )
     func acknowledge(_ packet: FeiQPacket, to ipAddress: String)
+    func uploadFile(
+        _ attachment: ChatAttachment,
+        text: String,
+        to ipAddress: String,
+        recipientName: String?,
+        progress: @escaping (FileTransferProgress) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> FileTransferCancellation
+    func downloadFile(
+        _ attachment: FeiQFileAttachment,
+        packetNumber: UInt64,
+        from ipAddress: String,
+        port: UInt16,
+        to destinationURL: URL,
+        progress: @escaping (FileTransferProgress) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> FileTransferCancellation
 }
 
 extension FeiQNetworkServiceProtocol {
+    func uploadFile(
+        _ attachment: ChatAttachment,
+        text: String,
+        to ipAddress: String,
+        recipientName: String?,
+        progress: @escaping (FileTransferProgress) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> FileTransferCancellation {
+        let cancellation = FileTransferCancellation()
+        completion(.failure(FeiQFileTransferError.requestFailed("当前网络实现不支持可管理的文件发送")))
+        return cancellation
+    }
+
+    func downloadFile(
+        _ attachment: FeiQFileAttachment,
+        packetNumber: UInt64,
+        from ipAddress: String,
+        port: UInt16,
+        to destinationURL: URL,
+        progress: @escaping (FileTransferProgress) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> FileTransferCancellation {
+        let cancellation = FileTransferCancellation()
+        downloadFile(attachment, packetNumber: packetNumber, from: ipAddress, port: port,
+                     to: destinationURL) { result in
+            completion(result)
+        }
+        return cancellation
+    }
+
     /// Older test transports and alternative implementations can continue to
     /// use the standard port. FeiQ itself may be configured with another
     /// port, which is why the real service receives the UDP source port.
@@ -100,7 +159,9 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
     private var imageSends: [String: FeiQInlineImageSendSession] = [:]
     private var imageTimer: DispatchSourceTimer?
     private var imageMarkers: [UInt64: (packet: FeiQPacket, ip: String, sentAt: Date, attempts: Int)] = [:]
-    private let downloadQueue = DispatchQueue(label: "com.feiqmac.file-downloads", qos: .utility)
+    private let downloadQueue = DispatchQueue(
+        label: "com.feiqmac.file-transfers", qos: .utility, attributes: .concurrent
+    )
     var onLog: ((String) -> Void)?
     var onStateChange: ((Bool) -> Void)?
 
@@ -121,7 +182,28 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
     /// A file attachment is requested with the original message packet ID
     /// and the attachment ID. Keeping both prevents a stale/duplicated file
     /// ID from exposing the wrong local file.
-    private var outgoingFilesByKey: [OutgoingFileKey: URL] = [:]
+    private final class OutgoingFileTransfer {
+        let attachment: ChatAttachment
+        let ipAddress: String
+        let cancellation: FileTransferCancellation
+        let progress: FileTransferProgressReporter
+        let completion: (Result<Void, Error>) -> Void
+        var isSending = false
+
+        init(attachment: ChatAttachment, ipAddress: String, cancellation: FileTransferCancellation,
+             progress: @escaping (FileTransferProgress) -> Void,
+             completion: @escaping (Result<Void, Error>) -> Void) {
+            self.attachment = attachment
+            self.ipAddress = ipAddress
+            self.cancellation = cancellation
+            self.progress = FileTransferProgressReporter(progress)
+            self.completion = completion
+        }
+    }
+
+    private var outgoingFilesByKey: [OutgoingFileKey: OutgoingFileTransfer] = [:]
+    private var completedFileOffers: [OutgoingFileKey: (attachment: ChatAttachment, ipAddress: String, date: Date)] = [:]
+    private var activeDownloads: [UUID: FileTransferCancellation] = [:]
     private static let maximumFileBytes: Int64 = 2 * 1024 * 1024 * 1024
     private var packetCounter: UInt32 = 0
     private var running = false
@@ -355,54 +437,78 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
             return
         }
 
-        var descriptors: [FeiQFileAttachment] = []
-        descriptors.reserveCapacity(attachments.count)
-
-        for attachment in attachments {
-            guard attachment.isAvailable else {
-                emitLog("文件未发送：文件不存在 \(attachment.fileName)")
-                return
-            }
-
-            guard let fileID = numericFileID(attachment.id) else {
-                emitLog("文件未发送：文件 ID 无效 \(attachment.fileName)")
-                return
-            }
-
-            do {
-                let values = try attachment.localURL.resourceValues(forKeys: [
-                    .isRegularFileKey,
-                    .fileSizeKey
-                ])
-                guard values.isRegularFile == true,
-                      let fileSize = values.fileSize,
-                      Int64(fileSize) >= 0,
-                      Int64(fileSize) <= Self.maximumFileBytes else {
-                    emitLog("文件未发送：不是普通文件或超过 2 GB 限制 \(attachment.fileName)")
-                    return
+        for (index, attachment) in attachments.enumerated() {
+            beginFileUpload(
+                attachment, text: index == 0 ? text : "", to: ipAddress,
+                recipientName: recipientName, cancellation: FileTransferCancellation(), progress: { _ in }
+            ) { [weak self] result in
+                if case .failure(let error) = result {
+                    self?.emitLog("文件发送失败：\(attachment.fileName) · \(error.localizedDescription)")
                 }
-
-                descriptors.append(
-                    FeiQFileAttachment(
-                        fileID: String(fileID),
-                        fileName: attachment.fileName,
-                        fileSize: Int64(fileSize),
-                        modifiedAt: attachment.modifiedAt,
-                        fileAttributes: attachment.fileAttributes == 0
-                            ? 0x00000001
-                            : attachment.fileAttributes
-                    )
-                )
-            } catch {
-                emitLog("文件未发送：无法读取 \(attachment.fileName)：\(error.localizedDescription)")
-                return
             }
         }
+    }
 
-        let packetNumber = nextPacketNumber()
+    func uploadFile(
+        _ attachment: ChatAttachment,
+        text: String,
+        to ipAddress: String,
+        recipientName: String?,
+        progress: @escaping (FileTransferProgress) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> FileTransferCancellation {
+        let cancellation = FileTransferCancellation()
+        queue.async {
+            self.beginFileUpload(attachment, text: text, to: ipAddress, recipientName: recipientName,
+                                 cancellation: cancellation, progress: progress, completion: completion)
+        }
+        return cancellation
+    }
+
+    private func beginFileUpload(
+        _ attachment: ChatAttachment,
+        text: String,
+        to ipAddress: String,
+        recipientName: String?,
+        cancellation: FileTransferCancellation,
+        progress: @escaping (FileTransferProgress) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        guard !cancellation.isCancelled else {
+            completion(.failure(FeiQFileTransferError.cancelled))
+            return
+        }
+        guard running else {
+            completion(.failure(FeiQFileTransferError.networkUnavailable))
+            return
+        }
+        guard attachment.isAvailable else {
+            completion(.failure(FeiQFileTransferError.fileNotFound))
+            return
+        }
+        guard let fileID = numericFileID(attachment.id) else {
+            completion(.failure(FeiQFileTransferError.requestFailed("文件 ID 无效")))
+            return
+        }
+        do {
+            let values = try attachment.localURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true, let fileSize = values.fileSize,
+                  fileSize >= 0, Int64(fileSize) <= Self.maximumFileBytes,
+                  Int64(fileSize) == attachment.fileSize else {
+                throw FeiQFileTransferError.requestFailed("本地文件大小已改变或超过 2 GB 限制，请重新添加")
+            }
+        } catch {
+            completion(.failure(error))
+            return
+        }
+        let key = OutgoingFileKey(packetNumber: nextPacketNumber(), fileID: fileID)
+        let descriptor = FeiQFileAttachment(
+            fileID: String(fileID), fileName: attachment.fileName, fileSize: attachment.fileSize,
+            modifiedAt: attachment.modifiedAt, fileAttributes: 0x00000001
+        )
         let packet = FeiQPacket(
             versionIdentifier: feiQVersionIdentifier,
-            packetNumber: packetNumber,
+            packetNumber: key.packetNumber,
             senderName: localName,
             senderHost: localHost,
             command: FeiQCommand.sendMessage.rawValue
@@ -410,27 +516,55 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
                 | FeiQPacket.fileAttachOption,
             additionalData: FeiQAttachmentCodec.encode(
                 message: FeiQMessageFormatter.wireText(text),
-                attachments: descriptors,
+                attachments: [descriptor],
                 preferUTF8: false
             )
         )
 
+        let transfer = OutgoingFileTransfer(
+            attachment: attachment, ipAddress: ipAddress, cancellation: cancellation,
+            progress: progress, completion: completion
+        )
+        outgoingFilesByKey[key] = transfer
+        cancellation.onCancel { [weak self] in
+            self?.queue.async { [weak self] in
+                guard let self, self.outgoingFilesByKey[key]?.isSending == false else { return }
+                self.finishFileUpload(key, cancellationID: cancellation.id,
+                                      result: .failure(FeiQFileTransferError.cancelled))
+            }
+        }
         guard sendUDP(packet.encoded(), to: ipAddress) else {
-            emitLog("UDP → \(ipAddress)：文件通知发送失败")
+            finishFileUpload(key, cancellationID: cancellation.id,
+                             result: .failure(FeiQFileTransferError.requestFailed("文件通知发送失败")))
             return
         }
-
-        for (attachment, descriptor) in zip(attachments, descriptors) {
-            guard let fileID = numericFileID(descriptor.fileID) else { continue }
-            outgoingFilesByKey[
-                OutgoingFileKey(packetNumber: packetNumber, fileID: fileID)
-            ] = attachment.localURL
+        transfer.progress.report(0, state: .waitingForPeer)
+        emitLog("UDP → \(recipientName ?? ipAddress)：已发送文件通知（\(attachment.fileName)），等待对方接收")
+        queue.asyncAfter(deadline: .now() + 300) { [weak self] in
+            guard let self, self.outgoingFilesByKey[key]?.isSending == false else { return }
+            self.finishFileUpload(key, cancellationID: cancellation.id,
+                                  result: .failure(FeiQFileTransferError.peerTimedOut))
         }
+    }
 
-        let names = descriptors.map(\.fileName).joined(separator: "、")
-        emitLog(
-            "UDP → \(localName) → \(recipientName ?? ipAddress)（\(ipAddress)）：已发送文件通知（\(names)）"
-        )
+    private func finishFileUpload(_ key: OutgoingFileKey, cancellationID: UUID, result: Result<Void, Error>) {
+        guard let transfer = outgoingFilesByKey[key], transfer.cancellation.id == cancellationID else { return }
+        outgoingFilesByKey.removeValue(forKey: key)
+        transfer.cancellation.finish()
+        if case .success = result, running {
+            let date = Date()
+            completedFileOffers[key] = (transfer.attachment, transfer.ipAddress, date)
+            if completedFileOffers.count > 256,
+               let oldest = completedFileOffers.min(by: { $0.value.date < $1.value.date })?.key {
+                completedFileOffers.removeValue(forKey: oldest)
+            }
+            queue.asyncAfter(deadline: .now() + 600) { [weak self] in
+                guard self?.completedFileOffers[key]?.date == date else { return }
+                self?.completedFileOffers.removeValue(forKey: key)
+            }
+            emitLog("TCP → \(transfer.ipAddress)：已发送文件 \(transfer.attachment.fileName)")
+        }
+        transfer.completion(result)
     }
 
     func downloadFile(
@@ -458,8 +592,25 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         to destinationURL: URL,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        queue.async { [weak self] in
-            guard let self else { return }
+        _ = downloadFile(attachment, packetNumber: packetNumber, from: ipAddress, port: port,
+                         to: destinationURL, progress: { _ in }, completion: completion)
+    }
+
+    func downloadFile(
+        _ attachment: FeiQFileAttachment,
+        packetNumber: UInt64,
+        from ipAddress: String,
+        port: UInt16,
+        to destinationURL: URL,
+        progress: @escaping (FileTransferProgress) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> FileTransferCancellation {
+        let cancellation = FileTransferCancellation()
+        queue.async {
+            guard !cancellation.isCancelled else {
+                completion(.failure(FeiQFileTransferError.cancelled))
+                return
+            }
             guard let fileID = self.numericFileID(attachment.fileID) else {
                 completion(.failure(FeiQFileTransferError.requestFailed("文件 ID 无效")))
                 return
@@ -468,6 +619,7 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
                                      senderHost: self.localHost, command: .getFileData,
                                      additionalText: "\(String(packetNumber, radix: 16)):\(String(fileID, radix: 16)):0",
                                      versionIdentifier: "1")
+            self.activeDownloads[cancellation.id] = cancellation
             self.downloadQueue.async {
                 // Most FeiQ installations use 2425, but some Windows builds
                 // bind the TCP listener to the same port advertised by the
@@ -478,18 +630,21 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
                     ? [Self.port]
                     : [firstPort, Self.port]
                 var finalResult: Result<Void, Error>?
+                let reporter = FileTransferProgressReporter(progress)
 
-                for (index, candidatePort) in candidatePorts.enumerated() {
+                ports: for (index, candidatePort) in candidatePorts.enumerated() {
                     var result: Result<Void, Error> = .failure(
                         FeiQFileTransferError.connectionFailed("未尝试连接")
                     )
                     for attempt in 1...2 {
-                        result = self.downloadFileInternal(
+                        result = FileTransferIO.download(
                             attachment,
-                            request: request,
+                            request: request.encoded(),
                             from: ipAddress,
                             port: candidatePort,
-                            to: destinationURL
+                            to: destinationURL,
+                            cancellation: cancellation,
+                            progress: reporter
                         )
                         finalResult = result
 
@@ -501,6 +656,16 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
                             self.emitLog(
                                 "TCP ← \(ipAddress):\(candidatePort)：文件 \(attachment.fileName)，请求 \(request.additionalText)，第 \(attempt) 次失败：\(error.localizedDescription)"
                             )
+                            if cancellation.isCancelled {
+                                finalResult = .failure(FeiQFileTransferError.cancelled)
+                                break ports
+                            }
+                            switch error as? FeiQFileTransferError {
+                            case .connectionFailed, .unexpectedEndOfStream:
+                                break
+                            default:
+                                break ports
+                            }
                         }
 
                         if attempt < 2 {
@@ -522,12 +687,19 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
                     }
                 }
 
-                completion(
-                    finalResult
-                        ?? .failure(FeiQFileTransferError.connectionFailed("没有可用的文件传输端口"))
-                )
+                let result = finalResult
+                    ?? .failure(FeiQFileTransferError.connectionFailed("没有可用的文件传输端口"))
+                self.queue.async {
+                    self.activeDownloads.removeValue(forKey: cancellation.id)
+                    cancellation.finish()
+                    if case .success = result {
+                        self.emitLog("TCP ← \(ipAddress)：已接收文件 \(attachment.fileName)（\(attachment.fileSize) bytes）")
+                    }
+                    completion(result)
+                }
             }
         }
+        return cancellation
     }
 
     private func pumpImageSends() {
@@ -653,11 +825,18 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         clientSources.removeAll()
         clientBuffers.removeAll()
         clientAddresses.removeAll()
-        // A single attachment can be requested by several recipients (for
-        // example, when sending a group image). Keep the URL index for the
-        // lifetime of this network session instead of removing it when the
-        // first recipient sends RELEASEFILES.
-        outgoingFilesByKey.removeAll()
+        for cancellation in activeDownloads.values {
+            cancellation.cancel()
+        }
+        for key in Array(outgoingFilesByKey.keys) {
+            guard let transfer = outgoingFilesByKey[key] else { continue }
+            transfer.cancellation.cancel()
+            if !transfer.isSending {
+                finishFileUpload(key, cancellationID: transfer.cancellation.id,
+                                 result: .failure(FeiQFileTransferError.cancelled))
+            }
+        }
+        completedFileOffers.removeAll()
 
         let wasRunning = running
         running = false
@@ -899,6 +1078,7 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
     private func consumeFinalTCPFrame(for descriptor: Int32) -> Bool {
         guard let data = clientBuffers[descriptor], !data.isEmpty else { return false }
         if handleTCPFrame(data, on: descriptor) {
+            closeTCPClient(descriptor)
             return true
         }
         clientBuffers[descriptor] = Data()
@@ -935,55 +1115,45 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         )
         guard fields.count >= 2,
               let packetNumber = fields.first.flatMap({ numericHexValue(String($0)) }),
-              let fileID = fields.dropFirst().first.flatMap({ numericHexValue(String($0)) }),
-              let fileURL = outgoingFilesByKey[
-                OutgoingFileKey(packetNumber: packetNumber, fileID: fileID)
-              ] else {
+              let fileID = fields.dropFirst().first.flatMap({ numericHexValue(String($0)) }) else {
             emitLog("TCP →：找不到请求的文件 \(packet.additionalText)")
             return
         }
-
-        let offset: UInt64
-        if fields.count > 2 {
-            offset = numericHexValue(String(fields[2])) ?? 0
-        } else {
-            offset = 0
-        }
-
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            emitLog("TCP →：文件已不存在：\(fileURL.path)")
-            return
-        }
-
-        setBlocking(descriptor)
-        var timeout = timeval(tv_sec: 60, tv_usec: 0)
-        _ = withUnsafePointer(to: &timeout) {
-            setsockopt(
-                descriptor,
-                SOL_SOCKET,
-                SO_SNDTIMEO,
-                $0,
-                socklen_t(MemoryLayout<timeval>.size)
+        let key = OutgoingFileKey(packetNumber: packetNumber, fileID: fileID)
+        let ipAddress = clientAddresses[descriptor] ?? ""
+        if outgoingFilesByKey[key] == nil, let offer = completedFileOffers[key],
+           offer.ipAddress == ipAddress, Date().timeIntervalSince(offer.date) < 600 {
+            completedFileOffers.removeValue(forKey: key)
+            outgoingFilesByKey[key] = OutgoingFileTransfer(
+                attachment: offer.attachment, ipAddress: offer.ipAddress,
+                cancellation: FileTransferCancellation(), progress: { _ in }, completion: { _ in }
             )
         }
-
-        do {
-            let fileHandle = try FileHandle(forReadingFrom: fileURL)
-            defer { try? fileHandle.close() }
-            try fileHandle.seek(toOffset: offset)
-
-            while true {
-                let chunk = try fileHandle.read(upToCount: 64 * 1024) ?? Data()
-                if chunk.isEmpty { break }
-                guard sendAll(chunk, on: descriptor) else {
-                    emitLog("TCP →：发送文件数据失败：\(String(cString: strerror(errno)))")
-                    return
-                }
+        guard let transfer = outgoingFilesByKey[key], transfer.ipAddress == ipAddress,
+              !transfer.isSending, !transfer.cancellation.isCancelled else {
+            emitLog("TCP → \(ipAddress)：文件任务不可用或来源不匹配")
+            return
+        }
+        guard let offset = fields.count > 2 ? numericHexValue(String(fields[2])) : 0,
+              offset <= UInt64(max(0, transfer.attachment.fileSize)) else {
+            emitLog("TCP → \(ipAddress)：文件偏移量无效")
+            return
+        }
+        let transferDescriptor = Darwin.dup(descriptor)
+        guard transferDescriptor >= 0 else {
+            finishFileUpload(key, cancellationID: transfer.cancellation.id,
+                             result: .failure(FeiQFileTransferError.socketCreation))
+            return
+        }
+        transfer.isSending = true
+        downloadQueue.async {
+            let result = FileTransferIO.sendFile(
+                transfer.attachment, on: transferDescriptor, offset: offset,
+                cancellation: transfer.cancellation, progress: transfer.progress
+            )
+            self.queue.async {
+                self.finishFileUpload(key, cancellationID: transfer.cancellation.id, result: result)
             }
-            _ = Darwin.shutdown(descriptor, SHUT_WR)
-            emitLog("TCP →：已发送文件 \(fileURL.lastPathComponent)")
-        } catch {
-            emitLog("TCP →：读取文件失败：\(error.localizedDescription)")
         }
     }
 
@@ -1073,8 +1243,15 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
             .split(separator: ":", omittingEmptySubsequences: true)
             .first
             .flatMap({ numericHexValue(String($0)) }) {
-            outgoingFilesByKey = outgoingFilesByKey.filter {
-                $0.key.packetNumber != packetNumber
+            let keys = outgoingFilesByKey.keys.filter { $0.packetNumber == packetNumber }
+            for key in keys {
+                guard let transfer = outgoingFilesByKey[key], transfer.ipAddress == ipAddress,
+                      !transfer.isSending else { continue }
+                finishFileUpload(key, cancellationID: transfer.cancellation.id,
+                                 result: .failure(FeiQFileTransferError.peerDeclined))
+            }
+            completedFileOffers = completedFileOffers.filter {
+                $0.key.packetNumber != packetNumber || $0.value.ipAddress != ipAddress
             }
         }
         let commandText = packet.commandType.map { String(describing: $0) } ?? "0x\(String(packet.command, radix: 16))"
@@ -1195,140 +1372,6 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
         }
         _ = Darwin.shutdown(descriptor, SHUT_WR)
         return sent
-    }
-
-    private func downloadFileInternal(
-        _ attachment: FeiQFileAttachment,
-        request: FeiQPacket,
-        from ipAddress: String,
-        port: UInt16,
-        to destinationURL: URL
-    ) -> Result<Void, Error> {
-        guard let address = makeIPv4Address(ipAddress, port: port) else {
-            return .failure(FeiQFileTransferError.invalidAddress)
-        }
-
-        let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
-        guard descriptor >= 0 else {
-            return .failure(FeiQFileTransferError.socketCreation)
-        }
-        defer { Darwin.close(descriptor) }
-
-        var noSignal: Int32 = 1
-        _ = setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
-        var timeout = timeval(tv_sec: 60, tv_usec: 0)
-        _ = withUnsafePointer(to: &timeout) {
-            setsockopt(
-                descriptor,
-                SOL_SOCKET,
-                SO_RCVTIMEO,
-                $0,
-                socklen_t(MemoryLayout<timeval>.size)
-            )
-        }
-        _ = withUnsafePointer(to: &timeout) {
-            setsockopt(
-                descriptor,
-                SOL_SOCKET,
-                SO_SNDTIMEO,
-                $0,
-                socklen_t(MemoryLayout<timeval>.size)
-            )
-        }
-
-        var mutableAddress = address
-        let connected = withUnsafePointer(to: &mutableAddress) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(
-                    descriptor,
-                    $0,
-                    socklen_t(MemoryLayout<sockaddr_in>.size)
-                )
-            }
-        }
-        guard connected == 0 else {
-            let errorCode = errno
-            let systemMessage = String(cString: strerror(errorCode))
-            let hint: String
-            switch errorCode {
-            case EHOSTUNREACH, ENETUNREACH, ECONNREFUSED:
-                hint = "；请检查 Windows 飞秋是否允许 TCP 2425 入站"
-            default:
-                hint = ""
-            }
-            return .failure(
-                FeiQFileTransferError.connectionFailed(
-                    "\(ipAddress):\(port) · \(systemMessage)\(hint)"
-                )
-            )
-        }
-
-        guard sendAll(request.encoded(), on: descriptor) else {
-            return .failure(
-                FeiQFileTransferError.requestFailed(
-                    String(cString: strerror(errno))
-                )
-            )
-        }
-        do {
-            try FileManager.default.createDirectory(
-                at: destinationURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            FileManager.default.createFile(
-                atPath: destinationURL.path,
-                contents: nil
-            )
-            let fileHandle = try FileHandle(forWritingTo: destinationURL)
-            defer { try? fileHandle.close() }
-
-            var receivedBytes: Int64 = 0
-            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-            while receivedBytes < attachment.fileSize {
-                let count = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
-                    Darwin.recv(
-                        descriptor,
-                        rawBuffer.baseAddress,
-                        min(rawBuffer.count, Int(attachment.fileSize - receivedBytes)),
-                        0
-                    )
-                }
-
-                if count > 0 {
-                    try fileHandle.write(contentsOf: Data(buffer[0..<count]))
-                    receivedBytes += Int64(count)
-                    continue
-                }
-                if count == 0 {
-                    try? FileManager.default.removeItem(at: destinationURL)
-                    return .failure(
-                        FeiQFileTransferError.unexpectedEndOfStream(
-                            expected: attachment.fileSize,
-                            received: receivedBytes
-                        )
-                    )
-                }
-
-                let errorCode = errno
-                if errorCode == EINTR { continue }
-                try? FileManager.default.removeItem(at: destinationURL)
-                return .failure(
-                    FeiQFileTransferError.connectionFailed(
-                        "\(String(cString: strerror(errorCode)))（已收到 \(receivedBytes)/\(attachment.fileSize) 字节）"
-                    )
-                )
-            }
-
-            // Do not release the whole message here: other attachments may
-            // still be downloading.
-            emitLog(
-                "TCP ← \(ipAddress)：已接收文件 \(attachment.fileName)（\(attachment.fileSize) bytes）"
-            )
-            return .success(())
-        } catch {
-            try? FileManager.default.removeItem(at: destinationURL)
-            return .failure(FeiQFileTransferError.fileWriteFailed(error.localizedDescription))
-        }
     }
 
     private func sendReleaseFiles(for fileID: String, to ipAddress: String) {

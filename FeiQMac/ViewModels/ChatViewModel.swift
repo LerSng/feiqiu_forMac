@@ -16,6 +16,9 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var typingPeerIDs: Set<String> = []
     @Published private(set) var deletingMessageIDs: Set<UUID> = []
+    @Published private(set) var fileTransferSnapshot = FileTransferSnapshot()
+    @Published var showingFileTransfers = false
+    @Published var imagePreview: ConversationImagePreviewModel?
 
     @Published var selectedPeerID: String?
     @Published var selectedGroupID: String?
@@ -536,6 +539,23 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    func previewImage(_ attachment: ChatAttachment, from message: ChatMessage, conversationID: String) {
+        guard selectedConversationID == conversationID, attachment.isImage else { return }
+        imagePreview = ConversationImagePreviewModel(
+            conversationID: conversationID,
+            conversationTitle: selectedGroup?.displayName ?? selectedPeer?.displayName ?? "",
+            message: message, attachmentID: attachment.id,
+            loadedMessages: messages(for: conversationID)
+        ) { [repository] completion in
+            repository.loadConversationImages(for: conversationID, completion: completion)
+        }
+    }
+
+    private func updateImagePreview(_ message: ChatMessage, conversationID: String) {
+        guard imagePreview?.conversationID == conversationID else { return }
+        imagePreview?.update(message)
+    }
+
     func deleteImage(_ attachmentID: String, from message: ChatMessage, conversationID: String) {
         let key = message.id.uuidString + ":" + attachmentID
         guard deletingImageKeys.insert(key).inserted else { return }
@@ -555,6 +575,7 @@ final class ChatViewModel: ObservableObject {
                         self.historyMessageUpdates[message.id] = updated
                     }
                     self.receivedFilesByConversation[conversationID]?.removeAll { $0.id == key }
+                    self.updateImagePreview(updated, conversationID: conversationID)
                 case .failure(let error):
                     self.deletedImageIDsByMessage[message.id]?.remove(attachmentID)
                     self.imageDeletionError = error.localizedDescription
@@ -590,6 +611,8 @@ final class ChatViewModel: ObservableObject {
                     )
                     self.messageDeletionError = "消息删除失败：\(error.localizedDescription)"
                     self.appendLog("删除消息失败：\(error.localizedDescription)")
+                } else if self.imagePreview?.conversationID == conversationID {
+                    self.imagePreview?.removeMessage(message.id)
                 }
             }
         }
@@ -669,6 +692,46 @@ final class ChatViewModel: ObservableObject {
         logs.removeAll()
     }
 
+    func setFileTransferQueuePaused(_ paused: Bool) {
+        repository.fileTransferCenter.setPaused(paused)
+    }
+
+    func setFileTransferConcurrency(_ count: Int) {
+        repository.fileTransferCenter.setMaximumConcurrentTransfers(count)
+    }
+
+    func cancelFileTransfer(_ identifier: UUID) {
+        repository.fileTransferCenter.cancel(identifier)
+    }
+
+    func retryFileTransfer(_ identifier: UUID) {
+        repository.fileTransferCenter.retry(identifier)
+    }
+
+    func prioritizeFileTransfer(_ identifier: UUID) {
+        repository.fileTransferCenter.moveToFront(identifier)
+    }
+
+    func moveFileTransfer(_ identifier: UUID, by offset: Int) {
+        repository.fileTransferCenter.move(identifier, by: offset)
+    }
+
+    func removeFileTransfer(_ identifier: UUID) {
+        repository.fileTransferCenter.remove(identifier)
+    }
+
+    func cancelAllFileTransfers() {
+        repository.fileTransferCenter.cancelAll()
+    }
+
+    func retryFailedFileTransfers() {
+        repository.fileTransferCenter.retryFailed()
+    }
+
+    func clearFinishedFileTransfers() {
+        repository.fileTransferCenter.clearFinished()
+    }
+
     private var currentIdentity: FeiQIdentity {
         FeiQIdentity(
             nickname: nickname,
@@ -707,6 +770,9 @@ final class ChatViewModel: ObservableObject {
 
     private func handle(_ event: ChatRepositoryEvent) {
         switch event {
+        case .fileTransfersChanged(let snapshot):
+            fileTransferSnapshot = snapshot
+
         case .peerShook(let peer):
             mergePeer(peer)
             let message = ChatMessage(
@@ -752,6 +818,7 @@ final class ChatViewModel: ObservableObject {
 
         case .messageUpdated(let message, let peer):
             let message = message.removingImages(withIDs: deletedImageIDsByMessage[message.id] ?? [])
+            updateImagePreview(message, conversationID: peer.id)
             // Completing an existing image is not a new incoming message:
             // keep its position, timestamp, unread count and notification.
             if let index = messagesByPeer[peer.id]?.firstIndex(where: { $0.id == message.id }) {
@@ -796,6 +863,18 @@ final class ChatViewModel: ObservableObject {
                 )
             }
 
+        case .groupMessageUpdated(let message, let group):
+            let message = message.removingImages(withIDs: deletedImageIDsByMessage[message.id] ?? [])
+            updateImagePreview(message, conversationID: group.id)
+            if let index = messagesByPeer[group.id]?.firstIndex(where: { $0.id == message.id }) {
+                messagesByPeer[group.id]?[index] = message
+            }
+            if isLoadingMessages, selectedConversationID == group.id {
+                historyMessageUpdates[message.id] = message
+            }
+            appendReceivedFiles(from: message, conversationID: group.id, senderName: message.senderName)
+            repository.persistGroupMessage(message, for: group, unreadCount: unreadCount(for: group.id))
+
         case .networkStateChanged(let running):
             isRunning = running
 
@@ -838,6 +917,7 @@ final class ChatViewModel: ObservableObject {
 
         selectedPeerID = peerID
         selectedGroupID = groupID
+        imagePreview = nil
         stopLocalTyping()
         draft = ""
         draftAttachments.removeAll()
@@ -941,6 +1021,7 @@ final class ChatViewModel: ObservableObject {
         _ message: ChatMessage,
         conversationID: String
     ) {
+        updateImagePreview(message, conversationID: conversationID)
         guard selectedConversationID == conversationID else { return }
 
         var currentMessages = messagesByPeer[conversationID] ?? []

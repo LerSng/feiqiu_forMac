@@ -4,6 +4,7 @@ import Foundation
 
 private final class TestTransport: FeiQNetworkServiceProtocol {
     var downloadData: Data?
+    var successfulFileIDs: Set<String> = ["1"]
     var onInlineImage: ((Data, String, Int, FeiQPacket, String) -> Void)?
     var onPacket: ((FeiQPacket, String, FeiQTransport, UInt16) -> Void)?
     var onLog: ((String) -> Void)?
@@ -23,7 +24,7 @@ private final class TestTransport: FeiQNetworkServiceProtocol {
         from ipAddress: String, to destinationURL: URL,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        if attachment.fileID == "1", let downloadData {
+        if successfulFileIDs.contains(attachment.fileID), let downloadData {
             do {
                 try downloadData.write(to: destinationURL, options: .atomic)
                 completion(.success(()))
@@ -186,6 +187,33 @@ enum IncomingImageRepositoryChecks {
         let partialMessage = events.waitFor { $0.text.contains("1 张图片接收失败") }
         precondition(partialMessage.attachments.count == 1 && partialMessage.attachments[0].isAvailable,
                      "partial file transfer preserves valid image and reports failure")
+
+        transport.successfulFileIDs.insert("2")
+        let retryScheduled = DispatchSemaphore(value: 0)
+        repository.fileTransferCenter.snapshot { snapshot in
+            let transfer = snapshot.transfers.first {
+                $0.messageID == partialMessage.id && $0.attachment.fileName == "photo2.jpg" && $0.state == .failed
+            }!
+            repository.fileTransferCenter.retry(transfer.id)
+            retryScheduled.signal()
+        }
+        precondition(retryScheduled.wait(timeout: .now() + 5) == .success)
+        let retriedMessage = events.waitFor {
+            $0.id == partialMessage.id && $0.text == "多图" && $0.attachments.count == 2
+        }
+        precondition(retriedMessage.attachments.map(\.fileName) == ["photo1.jpg", "photo2.jpg"],
+                     "retry preserves the original attachment order")
+        precondition(events.snapshot.filter { $0.message.id == partialMessage.id && $0.isNew }.count == 1,
+                     "retry updates the original message without a new unread event")
+        let retryPersisted = DispatchSemaphore(value: 0)
+        history.loadRecentMessages(for: events.snapshot.last!.peer.id, limit: 60) { result in
+            let messages = try! result.get().messages
+            let restored = messages.filter { $0.id == partialMessage.id }
+            precondition(restored.count == 1 && restored[0].attachments.count == 2,
+                         "successful retry replaces the persisted failure instead of duplicating the message")
+            retryPersisted.signal()
+        }
+        precondition(retryPersisted.wait(timeout: .now() + 5) == .success)
 
         // A non-image attachment follows the same UDP metadata + TCP stream
         // path but must be persisted as a file and not rendered as an image.

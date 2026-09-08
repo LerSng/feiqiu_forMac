@@ -348,6 +348,15 @@ final class ChatHistoryStore {
         }
     }
 
+    func loadConversationImages(
+        for conversationID: String,
+        completion: @escaping (Result<[ChatHistoryImage], Error>) -> Void
+    ) {
+        queue.async {
+            completion(Result { try self.fetchConversationImages(for: conversationID) })
+        }
+    }
+
     func loadReceivedFiles(
         for peerID: String,
         limit: Int,
@@ -770,6 +779,36 @@ final class ChatHistoryStore {
             messages: Array(rows.prefix(pageSize).reversed()),
             hasMore: hasMore
         )
+    }
+
+    private func fetchConversationImages(for conversationID: String) throws -> [ChatHistoryImage] {
+        let statement = try prepare(
+            """
+            SELECT id, direction, sender_name, attachments_json, created_at
+            FROM messages
+            WHERE peer_id = ? AND attachments_json <> '[]'
+            ORDER BY created_at ASC, id ASC
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bindText(conversationID, at: 1, in: statement)
+        var images: [ChatHistoryImage] = []
+        while true {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { break }
+            guard result == SQLITE_ROW else { throw sqliteError() }
+            guard let messageID = UUID(uuidString: columnText(statement, 0)),
+                  let direction = ChatMessageDirection(rawValue: columnText(statement, 1)) else { continue }
+            let senderName = columnText(statement, 2)
+            let date = Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
+            for (index, attachment) in decodeAttachments(columnText(statement, 3)).enumerated() where attachment.isImage {
+                images.append(ChatHistoryImage(
+                    messageID: messageID, attachment: attachment, attachmentIndex: index,
+                    date: date, senderName: senderName, direction: direction
+                ))
+            }
+        }
+        return images
     }
 
     private func fetchReceivedFiles(

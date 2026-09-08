@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		F30000000000000000000001 /* ConversationImagePreviewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30000000000000000000002 /* ConversationImagePreviewModel.swift */; };
+		F20000000000000000000001 /* FileTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000002 /* FileTransfer.swift */; };
+		F20000000000000000000003 /* FileTransferCancellation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000004 /* FileTransferCancellation.swift */; };
+		F20000000000000000000005 /* FileTransferIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000006 /* FileTransferIO.swift */; };
+		F20000000000000000000007 /* FileTransferCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000008 /* FileTransferCenter.swift */; };
+		F20000000000000000000009 /* FileTransferCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000000A /* FileTransferCenterView.swift */; };
 		C50000000000000000000001 /* RemoteAssistanceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50000000000000000000002 /* RemoteAssistanceView.swift */; };
 		C40000000000000000000001 /* ChatHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C40000000000000000000002 /* ChatHeaderView.swift */; };
 		C60000000000000000000001 /* ConversationInfoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C60000000000000000000002 /* ConversationInfoView.swift */; };
@@ -51,6 +57,12 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		F30000000000000000000002 /* ConversationImagePreviewModel.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ConversationImagePreviewModel.swift; sourceTree = "<group>"; };
+		F20000000000000000000002 /* FileTransfer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FileTransfer.swift; sourceTree = "<group>"; };
+		F20000000000000000000004 /* FileTransferCancellation.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FileTransferCancellation.swift; sourceTree = "<group>"; };
+		F20000000000000000000006 /* FileTransferIO.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FileTransferIO.swift; sourceTree = "<group>"; };
+		F20000000000000000000008 /* FileTransferCenter.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FileTransferCenter.swift; sourceTree = "<group>"; };
+		F2000000000000000000000A /* FileTransferCenterView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FileTransferCenterView.swift; sourceTree = "<group>"; };
 		C50000000000000000000002 /* RemoteAssistanceView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = RemoteAssistanceView.swift; sourceTree = "<group>"; };
 		C40000000000000000000002 /* ChatHeaderView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ChatHeaderView.swift; sourceTree = "<group>"; };
 		C60000000000000000000002 /* ConversationInfoView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ConversationInfoView.swift; sourceTree = "<group>"; };
@@ -155,6 +167,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000070 /* ChatDomainModels.swift */,
+				F20000000000000000000002 /* FileTransfer.swift */,
 				A10000000000000000000033 /* ChatMessage.swift */,
 				A10000000000000000000034 /* FeiQPeer.swift */,
 			);
@@ -176,6 +189,8 @@
 				A10000000000000000000036 /* GBKCodec.swift */,
 				A10000000000000000000037 /* FeiQNetworkService.swift */,
 				F10000000000000000000002 /* NetworkServices.swift */,
+				F20000000000000000000004 /* FileTransferCancellation.swift */,
+				F20000000000000000000006 /* FileTransferIO.swift */,
 			);
 			path = Network;
 			sourceTree = "<group>";
@@ -184,6 +199,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000032 /* ChatViewModel.swift */,
+				F30000000000000000000002 /* ConversationImagePreviewModel.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -206,6 +222,7 @@
 				C30000000000000000000002 /* WindowShakeView.swift */,
 				B20000000000000000000004 /* PasteAwareTextEditor.swift */,
 				D10000000000000000000002 /* FilePreviewView.swift */,
+				F2000000000000000000000A /* FileTransferCenterView.swift */,
 				D30000000000000000000002 /* ChatImageView.swift */,
 			);
 			path = Views;
@@ -249,6 +266,7 @@
 				A10000000000000000000075 /* UserDefaultsSettingsService.swift */,
 				A1000000000000000000007E /* ChatAttachmentStorageService.swift */,
 				D20000000000000000000002 /* ScreenshotCaptureService.swift */,
+				F20000000000000000000008 /* FileTransferCenter.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -344,6 +362,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F20000000000000000000001 /* FileTransfer.swift in Sources */,
+				F20000000000000000000003 /* FileTransferCancellation.swift in Sources */,
+				F20000000000000000000005 /* FileTransferIO.swift in Sources */,
+				F20000000000000000000007 /* FileTransferCenter.swift in Sources */,
+				F20000000000000000000009 /* FileTransferCenterView.swift in Sources */,
+				F30000000000000000000001 /* ConversationImagePreviewModel.swift in Sources */,
 				A10000000000000000000020 /* FeiQMacApp.swift in Sources */,
 				A10000000000000000000021 /* ContentView.swift in Sources */,
 				A10000000000000000000022 /* ChatViewModel.swift in Sources */,

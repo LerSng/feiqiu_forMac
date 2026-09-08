@@ -3,6 +3,12 @@ import Foundation
 protocol ChatRepository: AnyObject {
     var onEvent: ((ChatRepositoryEvent) -> Void)? { get set }
     var historyLocationDescription: String { get }
+    var fileTransferCenter: FileTransferCenter { get }
+
+    func loadConversationImages(
+        for conversationID: String,
+        completion: @escaping (Result<[ChatHistoryImage], Error>) -> Void
+    )
 
     func start(identity: FeiQIdentity)
     func stop()
@@ -116,6 +122,7 @@ protocol ChatRepository: AnyObject {
 }
 
 final class DefaultChatRepository: ChatRepository {
+    let fileTransferCenter = FileTransferCenter()
     private let eventSource: FeiQNetworkEventSource
     private let discoveryService: DiscoveryService
     private let messageTransportService: MessageTransportService
@@ -153,6 +160,26 @@ final class DefaultChatRepository: ChatRepository {
     private var pendingInlineMessages: [String: PendingInlineMessage] = [:]
     private var receivedInlineImages: [String: (attachment: ChatAttachment, date: Date)] = [:]
     private var receivedMessagePackets: [String: Date] = [:]
+    private var deletedFileMessageIDs: Set<UUID> = []
+    private final class PendingFileMessage {
+        let message: ChatMessage
+        let peer: FeiQPeer
+        let failureUnit: String
+        let groups: [(group: ChatGroup, messageID: UUID)]
+        var pending: Set<Int>
+        var failed: Set<Int> = []
+        var cancelled: Set<Int> = []
+        var attachments: [Int: ChatAttachment] = [:]
+        var hasRelayedText = false
+
+        init(message: ChatMessage, peer: FeiQPeer, count: Int, failureUnit: String, groups: [ChatGroup]) {
+            self.message = message
+            self.peer = peer
+            self.failureUnit = failureUnit
+            self.groups = groups.map { ($0, UUID()) }
+            self.pending = Set(0..<count)
+        }
+    }
     private let inlineImageTimeout: TimeInterval
     private let inlineImageRetention: TimeInterval
 
@@ -267,14 +294,19 @@ final class DefaultChatRepository: ChatRepository {
         notificationRepository.onNotificationSelected = { [weak self] peerID in
             self?.emit(.notificationSelected(conversationID: peerID))
         }
+        fileTransferCenter.observe { [weak self] snapshot in
+            self?.emit(.fileTransfersChanged(snapshot))
+        }
     }
 
     func start(identity: FeiQIdentity) {
         updateIdentity(identity)
         discoveryService.start(identity: identity)
+        fileTransferCenter.setPaused(false)
     }
 
     func stop() {
+        fileTransferCenter.cancelAll(pauseQueue: true)
         discoveryService.stop()
     }
 
@@ -309,7 +341,8 @@ final class DefaultChatRepository: ChatRepository {
         text: String,
         attachments: [ChatAttachment],
         to ipAddress: String,
-        recipientName: String?
+        recipientName: String?,
+        messageID: UUID? = nil
     ) {
         let wireText = FeiQMessageFormatter.wireText(text)
         if attachments.isEmpty {
@@ -326,12 +359,27 @@ final class DefaultChatRepository: ChatRepository {
                 recipientName: recipientName
             )
         } else {
-            fileTransferService.send(
-                wireText,
-                attachments: attachments,
-                to: ipAddress,
-                recipientName: recipientName
-            )
+            for (index, attachment) in attachments.enumerated() {
+                let attachmentText: String
+                if index == 0 {
+                    attachmentText = wireText
+                } else if let relay = groupProtocolService.parseRelayText(wireText) {
+                    attachmentText = groupProtocolService.makeRelayText(
+                        groupName: relay.groupName, senderName: relay.senderName, text: ""
+                    )
+                } else {
+                    attachmentText = ""
+                }
+                fileTransferCenter.enqueue(
+                    attachment: attachment, direction: .outgoing,
+                    peerName: recipientName ?? ipAddress, ipAddress: ipAddress, messageID: messageID
+                ) { [fileTransferService] progress, completion in
+                    fileTransferService.send(
+                        attachment, text: attachmentText, to: ipAddress,
+                        recipientName: recipientName, progress: progress, completion: completion
+                    )
+                }
+            }
         }
     }
 
@@ -345,7 +393,8 @@ final class DefaultChatRepository: ChatRepository {
             text: message.text,
             attachments: message.attachments,
             to: peer.ipAddress,
-            recipientName: peer.displayName
+            recipientName: peer.displayName,
+            messageID: message.id
         )
     }
 
@@ -377,7 +426,8 @@ final class DefaultChatRepository: ChatRepository {
                 text: relayText,
                 attachments: message.attachments,
                 to: address,
-                recipientName: group.displayName
+                recipientName: member.displayName + " · " + group.displayName,
+                messageID: message.id
             )
             sentCount += 1
         }
@@ -472,6 +522,8 @@ final class DefaultChatRepository: ChatRepository {
             self.attachmentQueue.async {
                 switch result {
                 case .success(let attachments):
+                    self.deletedFileMessageIDs.insert(message.id)
+                    self.fileTransferCenter.cancelTransfers(for: message.id)
                     for attachment in attachments {
                         do {
                             try self.attachmentRepository.deleteManagedAttachment(attachment)
@@ -758,6 +810,13 @@ final class DefaultChatRepository: ChatRepository {
         )
     }
 
+    func loadConversationImages(
+        for conversationID: String,
+        completion: @escaping (Result<[ChatHistoryImage], Error>) -> Void
+    ) {
+        messageRepository.loadConversationImages(for: conversationID, completion: completion)
+    }
+
     func loadReceivedFiles(
         for peerID: String,
         limit: Int,
@@ -930,40 +989,11 @@ final class DefaultChatRepository: ChatRepository {
             downloadIncomingFiles(
                 remoteAttachments,
                 packetNumber: packet.packetNumber,
-                from: ipAddress,
-                port: sourcePort
-            ) { [weak self] result in
-                guard let self else { return }
-
-                switch result {
-                case .success(let downloaded):
-                    let failureUnit = remoteAttachments.allSatisfy(\.isImage)
-                        ? "张图片"
-                        : "个文件"
-                    let incomingMessage = ChatMessage(
-                        direction: .incoming,
-                        text: text + (downloaded.failedCount > 0
-                            ? "\n[\(downloaded.failedCount) \(failureUnit)接收失败，请对方重新发送]" : ""),
-                        senderName: peer.displayName,
-                        recipientName: currentIdentity.nickname,
-                        attachments: downloaded.attachments
-                    )
-                    self.deliverIncomingMessage(incomingMessage, from: peer)
-
-                case .failure(let error):
-                    self.emit(.log("文件接收失败：\(error.localizedDescription)"))
-                    let failureDescription = remoteAttachments.allSatisfy(\.isImage)
-                        ? "图片接收失败"
-                        : "文件接收失败"
-                    let textMessage = ChatMessage(
-                        direction: .incoming,
-                        text: text + (text.isEmpty ? "" : "\n") + "[\(failureDescription)，请对方重新发送]",
-                        senderName: peer.displayName,
-                        recipientName: currentIdentity.nickname
-                    )
-                    self.deliverIncomingMessage(textMessage, from: peer)
-                }
-            }
+                from: peer,
+                port: sourcePort,
+                text: text,
+                recipientName: currentIdentity.nickname
+            )
 
         case .receiveMessage, .readMessage, .deleteMessage, .answerReadMessage,
              .broadcastAbsence, .broadcastNotify, .broadcastIsGetList,
@@ -980,84 +1010,129 @@ final class DefaultChatRepository: ChatRepository {
     private func downloadIncomingFiles(
         _ remoteAttachments: [FeiQFileAttachment],
         packetNumber: UInt64,
-        from ipAddress: String,
+        from peer: FeiQPeer,
         port: UInt16,
-        completion: @escaping (Result<(attachments: [ChatAttachment], failedCount: Int), Error>) -> Void
+        text: String,
+        recipientName: String
     ) {
-        var preparedAttachments: [(remote: FeiQFileAttachment, local: ChatAttachment)] = []
-        var preparationFailureCount = 0
-        var preparationError: Error?
-
-        for remote in remoteAttachments {
-            guard remote.isRegularFile else {
-                preparationFailureCount += 1
-                self.emit(.log("跳过不支持的附件：\(remote.fileName)"))
-                continue
-            }
-
+        let relay = groupProtocolService.parseRelayText(text)
+        let groups = groupRepository.groups(containing: peer.id).filter {
+            relay == nil || relay?.groupName == $0.displayName
+        }
+        let pending = PendingFileMessage(
+            message: ChatMessage(direction: .incoming, text: text, senderName: peer.displayName,
+                                 recipientName: recipientName),
+            peer: peer, count: remoteAttachments.count,
+            failureUnit: remoteAttachments.allSatisfy(\.isImage) ? "张图片" : "个文件", groups: groups
+        )
+        publishFileMessage(pending, isNew: true)
+        for (index, remote) in remoteAttachments.enumerated() {
             do {
+                guard remote.isRegularFile else { throw ChatAttachmentStorageError.unsupportedFile }
                 let local = try remote.isImage
                     ? attachmentRepository.prepareIncomingImage(for: remote)
                     : attachmentRepository.prepareIncomingFile(for: remote)
-                preparedAttachments.append((remote: remote, local: local))
+                fileTransferCenter.enqueue(
+                    attachment: local, direction: .incoming, peerName: peer.displayName,
+                    ipAddress: peer.ipAddress, messageID: pending.message.id,
+                    operation: { [weak self, fileTransferService] progress, completion in
+                        self?.attachmentQueue.async { [weak self] in
+                            guard let self, !self.deletedFileMessageIDs.contains(pending.message.id) else { return }
+                            pending.pending.insert(index)
+                            pending.failed.remove(index)
+                            pending.cancelled.remove(index)
+                            self.publishFileMessage(pending)
+                        }
+                        return fileTransferService.download(
+                            remote, packetNumber: packetNumber, from: peer.ipAddress, port: port,
+                            to: local.localURL, progress: progress, completion: completion
+                        )
+                    }, completion: { [weak self] result in
+                        self?.attachmentQueue.async { [weak self] in
+                            guard let self else { return }
+                            guard !self.deletedFileMessageIDs.contains(pending.message.id) else {
+                                if case .success = result {
+                                    try? self.attachmentRepository.deleteManagedAttachment(local)
+                                }
+                                return
+                            }
+                            pending.pending.remove(index)
+                            pending.failed.remove(index)
+                            pending.cancelled.remove(index)
+                            switch result {
+                            case .success:
+                                pending.attachments[index] = local
+                            case .failure(let error):
+                                if (error as? FeiQFileTransferError) == .cancelled {
+                                    pending.cancelled.insert(index)
+                                } else {
+                                    pending.failed.insert(index)
+                                }
+                                self.emit(.log("文件接收未完成：\(remote.fileName) · \(error.localizedDescription)"))
+                            }
+                            self.publishFileMessage(pending)
+                            if case .success = result, relay == nil {
+                                for groupEntry in pending.groups where !self.deletedFileMessageIDs.contains(groupEntry.messageID) {
+                                    let message = ChatMessage(
+                                        id: groupEntry.messageID, direction: .incoming,
+                                        text: pending.hasRelayedText ? "" : pending.message.text,
+                                        senderName: peer.displayName, recipientName: groupEntry.group.displayName,
+                                        attachments: [local]
+                                    )
+                                    self.relayIncomingGroupMessage(
+                                        message, from: peer, group: groupEntry.group,
+                                        members: self.sessionRepository.peers(withIDs: groupEntry.group.memberIDs)
+                                    )
+                                }
+                                pending.hasRelayedText = true
+                            }
+                        }
+                    }
+                )
             } catch {
-                preparationFailureCount += 1
-                preparationError = preparationError ?? error
-                self.emit(.log("附件准备失败 \(remote.fileName)：\(error.localizedDescription)"))
+                pending.pending.remove(index)
+                pending.failed.insert(index)
+                emit(.log("附件准备失败 \(remote.fileName)：\(error.localizedDescription)"))
             }
         }
+        publishFileMessage(pending)
+    }
 
-        guard !preparedAttachments.isEmpty else {
-            if remoteAttachments.isEmpty {
-                completion(.success(([], preparationFailureCount)))
-            } else {
-                completion(.success(([], max(1, preparationFailureCount))))
+    private func publishFileMessage(_ pending: PendingFileMessage, isNew: Bool = false) {
+        let status: String
+        if !pending.pending.isEmpty {
+            status = "\(pending.pending.count) \(pending.failureUnit)等待或正在接收，请在文件传输中心查看进度"
+        } else {
+            var descriptions: [String] = []
+            if !pending.failed.isEmpty {
+                descriptions.append("\(pending.failed.count) \(pending.failureUnit)接收失败")
             }
-            return
+            if !pending.cancelled.isEmpty {
+                descriptions.append("\(pending.cancelled.count) \(pending.failureUnit)已取消")
+            }
+            status = descriptions.isEmpty ? "" : descriptions.joined(separator: "，") + "，可在文件传输中心重试"
         }
-
-        let group = DispatchGroup()
-        let resultLock = NSLock()
-        var downloaded = Array<ChatAttachment?>(repeating: nil, count: preparedAttachments.count)
-        var firstError: Error? = preparationError
-
-        for (index, prepared) in preparedAttachments.enumerated() {
-            group.enter()
-            fileTransferService.download(
-                prepared.remote,
-                packetNumber: packetNumber,
-                from: ipAddress,
-                port: port,
-                to: prepared.local.localURL
-            ) { result in
-                resultLock.lock()
-                defer {
-                    resultLock.unlock()
-                    group.leave()
-                }
-
-                switch result {
-                case .success:
-                    downloaded[index] = prepared.local
-                case .failure(let error):
-                    firstError = firstError ?? error
-                }
-            }
+        let attachments = pending.attachments.keys.sorted().compactMap { pending.attachments[$0] }
+        func messageText(_ text: String) -> String {
+            text + (status.isEmpty ? "" : (text.isEmpty ? "" : "\n") + "[\(status)]")
         }
-
-        group.notify(queue: attachmentQueue) {
-            resultLock.lock()
-            let error = firstError
-            let attachments = downloaded.compactMap { $0 }
-            resultLock.unlock()
-
-            let failedCount = preparationFailureCount + preparedAttachments.count - attachments.count
-            if let error, attachments.isEmpty, failedCount > 0 {
-                self.emit(.log("文件附件下载失败：\(error.localizedDescription)"))
-            } else if let error {
-                self.emit(.log("部分文件附件下载失败，保留已完成文件：\(error.localizedDescription)"))
-            }
-            completion(.success((attachments, failedCount)))
+        let message = ChatMessage(
+            id: pending.message.id, direction: .incoming, text: messageText(pending.message.text),
+            senderName: pending.message.senderName, recipientName: pending.message.recipientName,
+            date: pending.message.date, attachments: attachments
+        )
+        emit(isNew ? .messageReceived(message: message, peer: pending.peer)
+             : .messageUpdated(message: message, peer: pending.peer))
+        let relay = groupProtocolService.parseRelayText(pending.message.text)
+        for groupEntry in pending.groups where !deletedFileMessageIDs.contains(groupEntry.messageID) {
+            let groupMessage = ChatMessage(
+                id: groupEntry.messageID, direction: .incoming,
+                text: messageText(relay?.text ?? pending.message.text),
+                senderName: relay?.senderName ?? pending.message.senderName,
+                recipientName: groupEntry.group.displayName, date: pending.message.date, attachments: attachments
+            )
+            emit(isNew ? .groupMessageReceived(message: groupMessage, group: groupEntry.group)
+                 : .groupMessageUpdated(message: groupMessage, group: groupEntry.group))
         }
     }
 
@@ -1196,7 +1271,8 @@ final class DefaultChatRepository: ChatRepository {
                 text: relayText,
                 attachments: relayAttachments,
                 to: address,
-                recipientName: group.displayName
+                recipientName: member.displayName + " · " + group.displayName,
+                messageID: message.id
             )
             sentCount += 1
         }

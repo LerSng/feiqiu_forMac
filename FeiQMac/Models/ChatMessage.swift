@@ -158,6 +158,33 @@ struct ChatAttachment: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+struct ChatHistoryImage: Identifiable, Hashable, Sendable {
+    let messageID: UUID
+    let attachment: ChatAttachment
+    let attachmentIndex: Int
+    let date: Date
+    let senderName: String
+    let direction: ChatMessageDirection
+
+    var id: String { messageID.uuidString + ":" + attachment.id }
+
+    static func images(in message: ChatMessage) -> [ChatHistoryImage] {
+        message.attachments.enumerated().compactMap { index, attachment in
+            guard attachment.isImage else { return nil }
+            return ChatHistoryImage(
+                messageID: message.id, attachment: attachment, attachmentIndex: index,
+                date: message.date, senderName: message.senderName, direction: message.direction
+            )
+        }
+    }
+
+    static func precedes(_ first: ChatHistoryImage, _ second: ChatHistoryImage) -> Bool {
+        if first.date != second.date { return first.date < second.date }
+        if first.messageID != second.messageID { return first.messageID.uuidString < second.messageID.uuidString }
+        return first.attachmentIndex < second.attachmentIndex
+    }
+}
+
 struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
     let id: UUID
     let direction: ChatMessageDirection

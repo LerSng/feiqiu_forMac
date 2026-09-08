@@ -3,6 +3,11 @@ import Foundation
 protocol ChatHistoryService: AnyObject {
     var locationDescription: String { get }
 
+    func loadConversationImages(
+        for conversationID: String,
+        completion: @escaping (Result<[ChatHistoryImage], Error>) -> Void
+    )
+
     func loadSnapshot(
         completion: @escaping (Result<ChatHistorySnapshot, Error>) -> Void
     )
@@ -115,6 +120,13 @@ final class SQLiteChatHistoryService: ChatHistoryService {
             limit: limit,
             completion: completion
         )
+    }
+
+    func loadConversationImages(
+        for conversationID: String,
+        completion: @escaping (Result<[ChatHistoryImage], Error>) -> Void
+    ) {
+        store.loadConversationImages(for: conversationID, completion: completion)
     }
 
     func loadReceivedFiles(

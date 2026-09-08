@@ -528,19 +528,24 @@ private struct MessageBubble: View {
                                     from: message,
                                     conversationID: conversationID
                                 )
+                            },
+                            onPreview: { attachment in
+                                model.previewImage(attachment, from: message, conversationID: conversationID)
                             }
                         )
                         .frame(maxWidth: 360, alignment: isOutgoing ? .trailing : .leading)
                         .transition(.scale(scale: 0.9, anchor: isOutgoing ? .trailing : .leading).combined(with: .opacity))
                     } else if let attachment = group.attachments.first {
                         if attachment.isImage {
-                            ImageAttachmentView(attachment: attachment) {
-                                model.deleteImage(
-                                    attachment.id,
-                                    from: message,
-                                    conversationID: conversationID
-                                )
-                            }
+                            ImageAttachmentView(
+                                attachment: attachment,
+                                onDelete: {
+                                    model.deleteImage(attachment.id, from: message, conversationID: conversationID)
+                                },
+                                onPreview: { selectedAttachment in
+                                    model.previewImage(selectedAttachment, from: message, conversationID: conversationID)
+                                }
+                            )
                             .frame(maxWidth: 360, alignment: isOutgoing ? .trailing : .leading)
                             .transition(.scale(scale: 0.9, anchor: isOutgoing ? .trailing : .leading).combined(with: .opacity))
                         } else {

@@ -10,6 +10,11 @@ import Foundation
 protocol MessageRepository: AnyObject {
     var locationDescription: String { get }
 
+    func loadConversationImages(
+        for conversationID: String,
+        completion: @escaping (Result<[ChatHistoryImage], Error>) -> Void
+    )
+
     func saveMessage(
         _ message: ChatMessage,
         for peer: FeiQPeer,
@@ -144,6 +149,13 @@ final class DefaultMessageRepository: MessageRepository {
             limit: limit,
             completion: completion
         )
+    }
+
+    func loadConversationImages(
+        for conversationID: String,
+        completion: @escaping (Result<[ChatHistoryImage], Error>) -> Void
+    ) {
+        historyService.loadConversationImages(for: conversationID, completion: completion)
     }
 
     func loadReceivedFiles(

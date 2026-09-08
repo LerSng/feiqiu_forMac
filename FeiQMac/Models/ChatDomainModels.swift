@@ -84,6 +84,8 @@ enum ChatRepositoryEvent: Sendable {
     case messageReceived(message: ChatMessage, peer: FeiQPeer)
     case messageUpdated(message: ChatMessage, peer: FeiQPeer)
     case groupMessageReceived(message: ChatMessage, group: ChatGroup)
+    case groupMessageUpdated(message: ChatMessage, group: ChatGroup)
+    case fileTransfersChanged(FileTransferSnapshot)
     case networkStateChanged(Bool)
     case log(String)
     case notificationSelected(conversationID: String)

@@ -11,6 +11,7 @@ import SwiftUI
 struct ImageAttachmentView: View {
     let attachment: ChatAttachment
     let onDelete: () -> Void
+    var onPreview: ((ChatAttachment) -> Void)? = nil
     var cardSize: CGSize? = nil
     @State private var image: NSImage?
     @State private var didAttemptLoad = false
@@ -56,12 +57,11 @@ struct ImageAttachmentView: View {
         }
         .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .onTapGesture {
-            guard attachment.isAvailable else { return }
-            showingPreview = true
+            openPreview()
         }
         .contextMenu {
             Button("放大查看") {
-                showingPreview = true
+                openPreview()
             }
             Button("复制图片") {
                 copyImageToPasteboard()
@@ -85,6 +85,15 @@ struct ImageAttachmentView: View {
         .help("\(attachment.fileName) · \(attachment.fileSizeDescription)")
         .sheet(isPresented: $showingPreview) {
             ImagePreviewView(attachment: attachment)
+        }
+    }
+
+    private func openPreview() {
+        guard !isDisintegrating else { return }
+        if let onPreview {
+            onPreview(attachment)
+        } else {
+            showingPreview = true
         }
     }
 
@@ -121,6 +130,7 @@ struct ImageAttachmentView: View {
 struct ImageAlbumView: View {
     let attachments: [ChatAttachment]
     let onDelete: (String) -> Void
+    var onPreview: ((ChatAttachment) -> Void)? = nil
 
     @State private var currentIndex = 0
     @State private var currentImage: NSImage?
@@ -209,10 +219,9 @@ struct ImageAlbumView: View {
         }
         .contextMenu {
             Button("放大查看") {
-                guard currentAttachment?.isAvailable == true else { return }
-                showingPreview = true
+                openPreview()
             }
-            .disabled(currentAttachment?.isAvailable != true)
+            .disabled(currentAttachment == nil)
 
             Button("复制当前图片") {
                 copyCurrentImageToPasteboard()
@@ -308,9 +317,7 @@ struct ImageAlbumView: View {
         .frame(width: canvasSize.width, height: canvasSize.height)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard !isDisintegrating,
-                  currentAttachment?.isAvailable == true else { return }
-            showingPreview = true
+            openPreview()
         }
         .gesture(
             DragGesture(minimumDistance: 18)
@@ -429,6 +436,15 @@ struct ImageAlbumView: View {
         currentImage = currentAttachment.isAvailable
             ? NSImage(contentsOf: currentAttachment.localURL)
             : nil
+    }
+
+    private func openPreview() {
+        guard !isDisintegrating, let currentAttachment else { return }
+        if let onPreview {
+            onPreview(currentAttachment)
+        } else {
+            showingPreview = true
+        }
     }
 
     private func copyCurrentImageToPasteboard() {
@@ -692,15 +708,23 @@ private struct DisintegrationEffectView: View {
     }
 }
 
+@MainActor
 struct ImagePreviewView: View {
-    let attachment: ChatAttachment
+    @StateObject private var model: ConversationImagePreviewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var image: NSImage?
     @State private var scale: CGFloat = 1
     @State private var scaleAtGestureStart: CGFloat = 1
     @State private var offset: CGSize = .zero
     @State private var offsetAtGestureStart: CGSize = .zero
     @State private var rotation: Angle = .zero
+
+    init(model: ConversationImagePreviewModel) {
+        _model = StateObject(wrappedValue: model)
+    }
+
+    init(attachment: ChatAttachment) {
+        _model = StateObject(wrappedValue: ConversationImagePreviewModel(attachment: attachment))
+    }
 
     var body: some View {
         ZStack {
@@ -709,6 +733,19 @@ struct ImagePreviewView: View {
 
             VStack(spacing: 0) {
                 previewToolbar
+                if model.historyError != nil {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle")
+                        Text("历史图片加载失败，当前仅显示已加载的图片")
+                        Spacer()
+                        Button("重试") { model.reloadHistory() }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 10)
+                    .help(model.historyError ?? "")
+                }
                 previewCanvas
                 previewFooter
             }
@@ -725,8 +762,9 @@ struct ImagePreviewView: View {
         .background(.clear)
         .presentationBackground(.clear)
         .onAppear {
-            image = NSImage(contentsOf: attachment.localURL)
+            model.start()
         }
+        .onChange(of: model.currentImage?.id) { _, _ in resetImageTransform() }
     }
 
     private var previewToolbar: some View {
@@ -734,9 +772,21 @@ struct ImagePreviewView: View {
             Image(systemName: "photo")
                 .foregroundStyle(FeiQUI.accent)
 
-            Text(attachment.fileName)
+            Text(model.currentImage?.attachment.fileName ?? "图片预览")
                 .font(.headline)
                 .lineLimit(1)
+                .truncationMode(.middle)
+
+            if model.conversationID != nil {
+                Text("\(model.currentIndex.map { $0 + 1 } ?? 0) / \(model.images.count)")
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.65))
+                    .accessibilityLabel("第 \(model.currentIndex.map { $0 + 1 } ?? 0) 张，共 \(model.images.count) 张")
+                if model.isLoadingHistory {
+                    ProgressView().controlSize(.small).tint(.white)
+                        .help("正在读取此会话的历史图片")
+                }
+            }
 
             Spacer()
 
@@ -745,7 +795,8 @@ struct ImagePreviewView: View {
             } label: {
                 Image(systemName: "arrow.counterclockwise")
             }
-            .help("重置缩放和位置")
+            .help("适应窗口，重置缩放和位置")
+            .accessibilityLabel("图片适应窗口")
 
             Button {
                 scale = min(5, scale + 0.25)
@@ -754,6 +805,7 @@ struct ImagePreviewView: View {
                 Image(systemName: "plus.magnifyingglass")
             }
             .help("放大")
+            .disabled(model.image == nil)
 
             Button {
                 scale = max(0.35, scale - 0.25)
@@ -762,6 +814,7 @@ struct ImagePreviewView: View {
                 Image(systemName: "minus.magnifyingglass")
             }
             .help("缩小")
+            .disabled(model.image == nil)
 
             Button {
                 rotation += .degrees(90)
@@ -769,6 +822,7 @@ struct ImagePreviewView: View {
                 Image(systemName: "rotate.right")
             }
             .help("旋转 90 度")
+            .disabled(model.image == nil)
 
             Button {
                 copyImageToPasteboard()
@@ -776,13 +830,16 @@ struct ImagePreviewView: View {
                 Image(systemName: "doc.on.doc")
             }
             .help("复制图片")
+            .disabled(model.image == nil)
 
             Button {
+                guard let attachment = model.currentImage?.attachment else { return }
                 NSWorkspace.shared.activateFileViewerSelecting([attachment.localURL])
             } label: {
                 Image(systemName: "folder")
             }
             .help("在 Finder 中显示")
+            .disabled(model.currentImage?.attachment.isAvailable != true)
 
             Button {
                 dismiss()
@@ -790,6 +847,8 @@ struct ImagePreviewView: View {
                 Image(systemName: "xmark")
             }
             .help("关闭")
+            .accessibilityLabel("关闭图片预览")
+            .keyboardShortcut(.cancelAction)
         }
         .buttonStyle(.plain)
         .font(.system(size: 16, weight: .medium))
@@ -802,20 +861,22 @@ struct ImagePreviewView: View {
         ZStack {
             Color.clear
 
-            if let image {
+            if let image = model.image {
                 GeometryReader { proxy in
+                    let fittedSize = ImagePreviewLayout.fittedImageSize(
+                        image.size, in: proxy.size, rotationDegrees: rotation.degrees
+                    )
                     Image(nsImage: image)
                         .resizable()
                         .interpolation(.high)
                         .scaledToFit()
                         .frame(
-                            width: max(1, proxy.size.width - 84),
-                            height: max(1, proxy.size.height - 72)
+                            width: fittedSize.width,
+                            height: fittedSize.height
                         )
                         .scaleEffect(scale)
                         .rotationEffect(rotation)
                         .offset(offset)
-                        .shadow(color: .black.opacity(0.34), radius: 18, y: 8)
                         .contentShape(Rectangle())
                         .gesture(
                             MagnificationGesture()
@@ -829,13 +890,20 @@ struct ImagePreviewView: View {
                         .simultaneousGesture(
                             DragGesture()
                                 .onChanged { value in
+                                    guard scale > 1.01 || model.conversationID == nil else { return }
                                     offset = CGSize(
                                         width: offsetAtGestureStart.width + value.translation.width,
                                         height: offsetAtGestureStart.height + value.translation.height
                                     )
                                 }
-                                .onEnded { _ in
-                                    offsetAtGestureStart = offset
+                                .onEnded { value in
+                                    if scale <= 1.01, model.conversationID != nil,
+                                       abs(value.translation.width) >= 60,
+                                       abs(value.translation.width) > abs(value.translation.height) * 1.2 {
+                                        model.move(by: value.translation.width < 0 ? 1 : -1)
+                                    } else {
+                                        offsetAtGestureStart = offset
+                                    }
                                 }
                         )
                         .onTapGesture(count: 2) {
@@ -848,26 +916,83 @@ struct ImagePreviewView: View {
                                 }
                             }
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
                         .clipped()
                 }
-            } else {
+            } else if model.isLoadingImage {
                 ProgressView()
                     .controlSize(.large)
                     .tint(.white)
+            } else {
+                VStack(spacing: 12) {
+                    Image(systemName: "photo.badge.exclamationmark")
+                        .font(.system(size: 36))
+                    Text(model.currentImage == nil ? "没有可预览的图片" : "图片文件不可用或无法解码")
+                    if model.canGoPrevious || model.canGoNext {
+                        Text("可使用左右按钮继续查看其他图片").font(.caption)
+                    }
+                }
+                .foregroundStyle(.white.opacity(0.7))
+            }
+
+            if model.conversationID != nil {
+                HStack {
+                    Button {
+                        model.move(by: -1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 36, height: 44)
+                            .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    .disabled(!model.canGoPrevious)
+                    .opacity(model.canGoPrevious ? 1 : 0.25)
+                    .help("上一张图片（←）")
+                    .accessibilityLabel("上一张图片")
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                    Spacer()
+                    Button {
+                        model.move(by: 1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .frame(width: 36, height: 44)
+                            .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    .disabled(!model.canGoNext)
+                    .opacity(model.canGoNext ? 1 : 0.25)
+                    .help("下一张图片（→）")
+                    .accessibilityLabel("下一张图片")
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var previewFooter: some View {
-        HStack {
-            Text("双击放大 · 拖动查看 · 触控板捏合缩放")
-                .font(.caption)
-            Spacer()
-            Text(attachment.fileSizeDescription)
-                .font(.caption)
+        VStack(alignment: .leading, spacing: 6) {
+            if model.conversationID != nil, let current = model.currentImage {
+                HStack {
+                    Text(model.conversationTitle)
+                        .lineLimit(1)
+                    Text(current.direction == .outgoing ? "我" : current.senderName)
+                        .lineLimit(1)
+                    Spacer()
+                    Text(current.date.formatted(date: .numeric, time: .shortened))
+                }
+            }
+            HStack {
+                Text(model.conversationID == nil
+                     ? "双击放大 · 拖动查看 · 触控板捏合缩放"
+                     : "← → / 左右滑动切图 · 双击放大 · 放大后拖动 · 捏合缩放")
+                Spacer()
+                Text(model.currentImage?.attachment.fileSizeDescription ?? "")
+            }
         }
+        .font(.caption)
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
         .foregroundStyle(.white.opacity(0.62))
@@ -882,7 +1007,7 @@ struct ImagePreviewView: View {
     }
 
     private func copyImageToPasteboard() {
-        guard let image = image ?? NSImage(contentsOf: attachment.localURL),
+        guard let image = model.image,
               let tiff = image.tiffRepresentation else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()

@@ -82,6 +82,39 @@ struct SidebarView: View {
             }
             .hiddenScrollIndicators()
 
+            Button {
+                model.showingFileTransfers = true
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.up.arrow.down.square")
+                        .foregroundStyle(FeiQUI.accent)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("文件传输中心")
+                            .font(.system(size: 12, weight: .medium))
+                        Text(transferSummary)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if model.fileTransferSnapshot.unfinishedCount > 0 {
+                        Text("\(model.fileTransferSnapshot.unfinishedCount)")
+                            .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(FeiQUI.accentSoft, in: Capsule())
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(12)
+                .background(FeiQUI.cardBackground.opacity(0.75), in: RoundedRectangle(cornerRadius: 10))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+
             HStack(spacing: 6) {
                 FeiQStatusDot(color: model.isRunning ? .green : .gray, size: 5)
                 Text(model.isRunning ? "局域网服务已启动" : "服务未启动")
@@ -113,6 +146,16 @@ struct SidebarView: View {
                 }
             }
         )
+    }
+
+    private var transferSummary: String {
+        let snapshot = model.fileTransferSnapshot
+        if snapshot.isPaused { return "队列已暂停 · \(snapshot.queuedCount) 个等待" }
+        if snapshot.unfinishedCount > 0 {
+            return "\(snapshot.activeCount) 个进行中 · \(snapshot.queuedCount) 个排队"
+        }
+        if snapshot.failedCount > 0 { return "\(snapshot.failedCount) 个失败，点击重试" }
+        return "查看进度、重试与管理队列"
     }
 
     @ViewBuilder

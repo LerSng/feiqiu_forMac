@@ -92,6 +92,23 @@ final class DefaultMessageTransportService: MessageTransportService {
 
 protocol FileTransferService: AnyObject {
     func send(
+        _ attachment: ChatAttachment,
+        text: String,
+        to ipAddress: String,
+        recipientName: String?,
+        progress: @escaping (FileTransferProgress) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> FileTransferCancellation
+    func download(
+        _ attachment: FeiQFileAttachment,
+        packetNumber: UInt64,
+        from ipAddress: String,
+        port: UInt16,
+        to destinationURL: URL,
+        progress: @escaping (FileTransferProgress) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> FileTransferCancellation
+    func send(
         _ wireText: String,
         attachments: [ChatAttachment],
         to ipAddress: String,
@@ -112,6 +129,31 @@ final class DefaultFileTransferService: FileTransferService {
 
     init(networkService: FeiQNetworkServiceProtocol) {
         self.networkService = networkService
+    }
+
+    func send(
+        _ attachment: ChatAttachment,
+        text: String,
+        to ipAddress: String,
+        recipientName: String?,
+        progress: @escaping (FileTransferProgress) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> FileTransferCancellation {
+        networkService.uploadFile(attachment, text: text, to: ipAddress, recipientName: recipientName,
+                                  progress: progress, completion: completion)
+    }
+
+    func download(
+        _ attachment: FeiQFileAttachment,
+        packetNumber: UInt64,
+        from ipAddress: String,
+        port: UInt16,
+        to destinationURL: URL,
+        progress: @escaping (FileTransferProgress) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> FileTransferCancellation {
+        networkService.downloadFile(attachment, packetNumber: packetNumber, from: ipAddress, port: port,
+                                    to: destinationURL, progress: progress, completion: completion)
     }
 
     func send(

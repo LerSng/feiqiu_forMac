@@ -33,6 +33,15 @@ struct ContentView: View {
 
             ToolbarItemGroup {
                 Button {
+                    model.showingFileTransfers = true
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down.square")
+                }
+                .help("文件传输中心（⇧⌘J）")
+                .accessibilityLabel("文件传输中心")
+                .keyboardShortcut("j", modifiers: [.command, .shift])
+
+                Button {
                     model.refreshDiscovery()
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -57,6 +66,13 @@ struct ContentView: View {
         .sheet(isPresented: $model.showingLogs) {
             LogsView()
                 .environmentObject(model)
+        }
+        .sheet(isPresented: $model.showingFileTransfers) {
+            FileTransferCenterView()
+                .environmentObject(model)
+        }
+        .sheet(item: $model.imagePreview) { preview in
+            ImagePreviewView(model: preview)
         }
         .sheet(isPresented: $model.showingGroupEditor) {
             GroupEditorView()

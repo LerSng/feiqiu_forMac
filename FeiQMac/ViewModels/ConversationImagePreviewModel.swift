@@ -18,6 +18,14 @@ enum ImagePreviewLayout {
     }
 }
 
+struct ImagePreviewCard: Identifiable {
+    let image: ChatHistoryImage
+    let offset: Int
+
+    var id: String { image.id }
+    var isSelected: Bool { offset == 0 }
+}
+
 @MainActor
 final class ConversationImagePreviewModel: ObservableObject, Identifiable {
     typealias HistoryLoader = (@escaping (Result<[ChatHistoryImage], Error>) -> Void) -> Void
@@ -43,6 +51,11 @@ final class ConversationImagePreviewModel: ObservableObject, Identifiable {
     var currentImage: ChatHistoryImage? { currentIndex.map { images[$0] } }
     var canGoPrevious: Bool { (currentIndex ?? 0) > 0 }
     var canGoNext: Bool { currentIndex.map { $0 + 1 < images.count } ?? false }
+    var visibleCards: [ImagePreviewCard] {
+        guard let currentIndex else { return [] }
+        let indices = max(0, currentIndex - 1)...min(images.count - 1, currentIndex + 1)
+        return indices.map { ImagePreviewCard(image: images[$0], offset: $0 - currentIndex) }
+    }
 
     init(
         conversationID: String?,

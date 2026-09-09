@@ -27,10 +27,39 @@ enum ImagePreviewChecks {
         defer { try? FileManager.default.removeItem(at: root) }
         checkFitToViewport()
         let imageURL = try makeImage(in: root)
+        checkCardWindow(imageURL: imageURL)
         try await checkConversationHistory(root: root, imageURL: imageURL)
         try await checkGalleryNavigation(imageURL: imageURL)
         try await checkGalleryUpdatesAndErrors(imageURL: imageURL)
         print("Image preview checks passed")
+    }
+
+    @MainActor
+    private static func checkCardWindow(imageURL: URL) {
+        let messages = (0..<240).map { message(Double($0), attachments: [attachment("shared-id", url: imageURL)]) }
+        let gallery = ConversationImagePreviewModel(conversationID: "peer", message: messages[0],
+                                                    attachmentID: "shared-id", loadedMessages: messages)
+        precondition(gallery.visibleCards.map(\.offset) == [0, 1])
+        for step in [1, -1] {
+            for _ in 1..<messages.count {
+                let previousID = gallery.selectedImageID
+                gallery.move(by: step)
+                let cards = gallery.visibleCards
+                precondition(cards.count <= 3 && Set(cards.map(\.id)).count == cards.count,
+                             "The carousel must only mount the current image and its immediate neighbors")
+                precondition(cards.filter(\.isSelected).count == 1)
+                precondition(cards.first(where: \.isSelected)?.id == gallery.selectedImageID)
+                precondition(cards.first(where: { $0.offset == -step })?.id == previousID,
+                             "The outgoing card must retain its identity as it slides to the opposite side")
+            }
+            let lastID = gallery.selectedImageID
+            gallery.move(by: step)
+            precondition(gallery.selectedImageID == lastID, "Card navigation must stop at each boundary")
+        }
+        precondition(gallery.visibleCards.map(\.offset) == [0, 1])
+        let cards = gallery.visibleCards.map(\.id)
+        gallery.move(by: 2)
+        precondition(gallery.visibleCards.map(\.id) == cards, "Invalid steps must not skip card identities")
     }
 
     private static func checkFitToViewport() {
@@ -143,6 +172,7 @@ enum ImagePreviewChecks {
         gallery.start()
         gallery.start()
         precondition(gallery.currentIndex == 1 && gallery.currentImage?.attachment.id == "second")
+        precondition(gallery.visibleCards.map(\.offset) == [-1, 0, 1])
         precondition(loader.attempts == 1 && gallery.isLoadingHistory)
         gallery.move(by: -1)
         let selection = gallery.selectedImageID
@@ -150,6 +180,8 @@ enum ImagePreviewChecks {
         try await waitFor { !gallery.isLoadingHistory && !gallery.isLoadingImage }
         precondition(gallery.selectedImageID == selection && gallery.currentIndex == 1,
                      "loading older history must keep the clicked image selected")
+        precondition(gallery.visibleCards.first(where: \.isSelected)?.id == selection,
+                     "A history refresh must not change the selected card identity")
         precondition(gallery.image != nil && gallery.images.count == 4)
         gallery.move(by: -1)
         precondition(gallery.currentImage?.messageID == earlier.id && !gallery.canGoPrevious)
@@ -167,6 +199,7 @@ enum ImagePreviewChecks {
         try await waitFor { !single.isLoadingImage }
         precondition(single.conversationID == nil && single.images.count == 1 && single.image != nil,
                      "draft previews must remain standalone")
+        precondition(single.visibleCards.count == 1 && single.visibleCards[0].isSelected)
     }
 
     @MainActor
@@ -192,6 +225,7 @@ enum ImagePreviewChecks {
         gallery.removeMessage(anchor.id)
         gallery.removeMessage(live.id)
         precondition(gallery.currentImage == nil && !gallery.isLoadingImage && gallery.image == nil)
+        precondition(gallery.visibleCards.isEmpty, "Deleted images must not leave stale carousel cards")
 
         let missing = message(12, attachments: [attachment("missing", url: imageURL.appendingPathExtension("missing"))])
         let failingLoader = DeferredImageHistory()

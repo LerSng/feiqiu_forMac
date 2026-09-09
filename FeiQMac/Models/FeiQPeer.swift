@@ -8,6 +8,7 @@ struct FeiQPeer: Identifiable, Hashable, Codable, Sendable {
     var group: String
     var lastSeen: Date
     var isOnline: Bool
+    var deviceIdentifier: String? = nil
 
     var displayName: String {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)

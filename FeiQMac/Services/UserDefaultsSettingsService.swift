@@ -11,6 +11,7 @@ final class UserDefaultsAppSettingsService: AppSettingsService {
         static let hostName = "feiq.hostname"
         static let groupName = "feiq.group"
         static let chatLoadAnimationMode = "feiq.chatLoadAnimationMode"
+        static let messageNotificationSound = "feiq.messageNotificationSound"
     }
 
     private let defaults: UserDefaults
@@ -28,7 +29,10 @@ final class UserDefaultsAppSettingsService: AppSettingsService {
             ),
             chatLoadAnimationMode: ChatLoadAnimationMode(
                 rawValue: defaults.string(forKey: Key.chatLoadAnimationMode) ?? ""
-            ) ?? .converge
+            ) ?? .converge,
+            messageNotificationSound: MessageNotificationSound(
+                rawValue: defaults.string(forKey: Key.messageNotificationSound) ?? ""
+            ) ?? .system
         )
     }
 
@@ -40,6 +44,7 @@ final class UserDefaultsAppSettingsService: AppSettingsService {
             settings.chatLoadAnimationMode.rawValue,
             forKey: Key.chatLoadAnimationMode
         )
+        defaults.set(settings.messageNotificationSound.rawValue, forKey: Key.messageNotificationSound)
     }
 
     private static var defaultHostName: String {

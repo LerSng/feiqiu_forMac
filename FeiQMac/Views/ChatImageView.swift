@@ -712,6 +712,7 @@ private struct DisintegrationEffectView: View {
 struct ImagePreviewView: View {
     @StateObject private var model: ConversationImagePreviewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scale: CGFloat = 1
     @State private var scaleAtGestureStart: CGFloat = 1
     @State private var offset: CGSize = .zero
@@ -859,86 +860,39 @@ struct ImagePreviewView: View {
 
     private var previewCanvas: some View {
         ZStack {
-            Color.clear
-
-            if let image = model.image {
-                GeometryReader { proxy in
-                    let fittedSize = ImagePreviewLayout.fittedImageSize(
-                        image.size, in: proxy.size, rotationDegrees: rotation.degrees
-                    )
-                    Image(nsImage: image)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFit()
-                        .frame(
-                            width: fittedSize.width,
-                            height: fittedSize.height
-                        )
-                        .scaleEffect(scale)
-                        .rotationEffect(rotation)
-                        .offset(offset)
-                        .contentShape(Rectangle())
-                        .gesture(
-                            MagnificationGesture()
-                                .onChanged { value in
-                                    scale = min(5, max(0.35, scaleAtGestureStart * value))
-                                }
-                                .onEnded { _ in
-                                    scaleAtGestureStart = scale
-                                }
-                        )
-                        .simultaneousGesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    guard scale > 1.01 || model.conversationID == nil else { return }
-                                    offset = CGSize(
-                                        width: offsetAtGestureStart.width + value.translation.width,
-                                        height: offsetAtGestureStart.height + value.translation.height
-                                    )
-                                }
-                                .onEnded { value in
-                                    if scale <= 1.01, model.conversationID != nil,
-                                       abs(value.translation.width) >= 60,
-                                       abs(value.translation.width) > abs(value.translation.height) * 1.2 {
-                                        model.move(by: value.translation.width < 0 ? 1 : -1)
-                                    } else {
-                                        offsetAtGestureStart = offset
-                                    }
-                                }
-                        )
-                        .onTapGesture(count: 2) {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                if scale > 1.1 {
-                                    resetImageTransform()
-                                } else {
-                                    scale = 2
-                                    scaleAtGestureStart = 2
-                                }
-                            }
-                        }
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .clipped()
-                }
-            } else if model.isLoadingImage {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
-            } else {
-                VStack(spacing: 12) {
-                    Image(systemName: "photo.badge.exclamationmark")
-                        .font(.system(size: 36))
-                    Text(model.currentImage == nil ? "没有可预览的图片" : "图片文件不可用或无法解码")
-                    if model.canGoPrevious || model.canGoNext {
-                        Text("可使用左右按钮继续查看其他图片").font(.caption)
+            GeometryReader { proxy in
+                let hasNeighbors = model.images.count > 1
+                let cardSize = CGSize(width: max(1, proxy.size.width - (hasNeighbors ? 128 : 24)),
+                                      height: max(1, proxy.size.height - 28))
+                ZStack {
+                    ForEach(model.visibleCards) { card in
+                        previewCard(card)
+                            .frame(width: cardSize.width, height: cardSize.height)
+                            .scaleEffect(card.isSelected ? 1 : 0.88)
+                            .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(card.offset) * -8),
+                                              axis: (x: 0, y: 1, z: 0), perspective: 0.35)
+                            .offset(x: CGFloat(card.offset) * cardSize.width * 0.56,
+                                    y: card.isSelected ? 0 : 8)
+                            .opacity(card.isSelected ? 1 : 0.55)
+                            .zIndex(card.isSelected ? 1 : 0)
+                            .transition(.opacity)
+                    }
+                    if model.visibleCards.isEmpty {
+                        ImagePreviewCardSurface(attachment: nil, image: nil, isSelected: true,
+                                                isLoadingImage: false, canNavigate: false)
+                            .frame(width: cardSize.width, height: cardSize.height)
                     }
                 }
-                .foregroundStyle(.white.opacity(0.7))
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .animation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.86),
+                           value: model.selectedImageID)
+                .clipped()
             }
 
             if model.conversationID != nil {
                 HStack {
                     Button {
-                        model.move(by: -1)
+                        moveImage(by: -1)
                     } label: {
                         Image(systemName: "chevron.left")
                             .frame(width: 36, height: 44)
@@ -951,7 +905,7 @@ struct ImagePreviewView: View {
                     .keyboardShortcut(.leftArrow, modifiers: [])
                     Spacer()
                     Button {
-                        model.move(by: 1)
+                        moveImage(by: 1)
                     } label: {
                         Image(systemName: "chevron.right")
                             .frame(width: 36, height: 44)
@@ -972,6 +926,61 @@ struct ImagePreviewView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func previewCard(_ card: ImagePreviewCard) -> some View {
+        ImagePreviewCardSurface(
+            attachment: card.image.attachment,
+            image: card.isSelected ? model.image : nil,
+            isSelected: card.isSelected,
+            isLoadingImage: card.isSelected && model.isLoadingImage,
+            canNavigate: model.canGoPrevious || model.canGoNext,
+            scale: card.isSelected ? scale : 1,
+            offset: card.isSelected ? offset : .zero,
+            rotation: card.isSelected ? rotation : .zero
+        )
+        .contentShape(Rectangle())
+        .gesture(
+            MagnificationGesture()
+                .onChanged { value in
+                    scale = min(5, max(0.35, scaleAtGestureStart * value))
+                }
+                .onEnded { _ in scaleAtGestureStart = scale },
+            including: card.isSelected && model.image != nil ? .all : .none
+        )
+        .simultaneousGesture(
+            DragGesture()
+                .onChanged { value in
+                    guard scale > 1.01 || model.conversationID == nil else { return }
+                    offset = CGSize(width: offsetAtGestureStart.width + value.translation.width,
+                                    height: offsetAtGestureStart.height + value.translation.height)
+                }
+                .onEnded { value in
+                    if scale <= 1.01, model.conversationID != nil,
+                       abs(value.translation.width) >= 60,
+                       abs(value.translation.width) > abs(value.translation.height) * 1.2 {
+                        moveImage(by: value.translation.width < 0 ? 1 : -1)
+                    } else {
+                        offsetAtGestureStart = offset
+                    }
+                },
+            including: card.isSelected ? .all : .none
+        )
+        .onTapGesture(count: 2) {
+            guard card.isSelected, model.image != nil else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                if scale > 1.1 {
+                    resetImageTransform()
+                } else {
+                    scale = 2
+                    scaleAtGestureStart = 2
+                }
+            }
+        }
+        .onTapGesture {
+            if !card.isSelected { moveImage(by: card.offset) }
+        }
+        .accessibilityHidden(!card.isSelected)
+    }
+
     private var previewFooter: some View {
         VStack(alignment: .leading, spacing: 6) {
             if model.conversationID != nil, let current = model.currentImage {
@@ -987,7 +996,7 @@ struct ImagePreviewView: View {
             HStack {
                 Text(model.conversationID == nil
                      ? "双击放大 · 拖动查看 · 触控板捏合缩放"
-                     : "← → / 左右滑动切图 · 双击放大 · 放大后拖动 · 捏合缩放")
+                     : "← → / 滑动 / 点击侧卡切图 · 双击放大 · 放大后拖动 · 捏合缩放")
                 Spacer()
                 Text(model.currentImage?.attachment.fileSizeDescription ?? "")
             }
@@ -996,6 +1005,12 @@ struct ImagePreviewView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
         .foregroundStyle(.white.opacity(0.62))
+    }
+
+    private func moveImage(by step: Int) {
+        guard (step == -1 && model.canGoPrevious) || (step == 1 && model.canGoNext) else { return }
+        resetImageTransform()
+        model.move(by: step)
     }
 
     private func resetImageTransform() {
@@ -1012,5 +1027,66 @@ struct ImagePreviewView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setData(tiff, forType: .tiff)
+    }
+}
+
+private struct ImagePreviewCardSurface: View {
+    let attachment: ChatAttachment?
+    let image: NSImage?
+    let isSelected: Bool
+    let isLoadingImage: Bool
+    let canNavigate: Bool
+    var scale: CGFloat = 1
+    var offset: CGSize = .zero
+    var rotation: Angle = .zero
+    @State private var thumbnail: NSImage?
+    @State private var didAttemptThumbnail = false
+
+    private var displayedImage: NSImage? {
+        if isSelected { return image ?? (isLoadingImage ? thumbnail : nil) }
+        return thumbnail
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                if let displayedImage {
+                    let fittedSize = ImagePreviewLayout.fittedImageSize(
+                        displayedImage.size, in: proxy.size, rotationDegrees: rotation.degrees
+                    )
+                    Image(nsImage: displayedImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: fittedSize.width, height: fittedSize.height)
+                        .scaleEffect(scale)
+                        .rotationEffect(rotation)
+                        .offset(offset)
+                        .accessibilityLabel(attachment?.fileName ?? "图片")
+                } else if isSelected ? isLoadingImage : !didAttemptThumbnail {
+                    ProgressView().controlSize(.large).tint(.white)
+                } else {
+                    VStack(spacing: 12) {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.system(size: 36))
+                        Text(attachment == nil ? "没有可预览的图片" : "图片文件不可用或无法解码")
+                        if isSelected && canNavigate {
+                            Text("可使用左右按钮继续查看其他图片").font(.caption)
+                        }
+                    }
+                    .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .task(id: attachment) {
+            thumbnail = nil
+            didAttemptThumbnail = false
+            guard let attachment else { didAttemptThumbnail = true; return }
+            let bitmap = await ChatImageThumbnailService.shared.thumbnail(for: attachment, pixelSize: 640)
+            guard !Task.isCancelled else { return }
+            thumbnail = bitmap.map { NSImage(cgImage: $0, size: .zero) }
+            didAttemptThumbnail = true
+        }
     }
 }

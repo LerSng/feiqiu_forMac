@@ -1,6 +1,7 @@
 // Standalone receive-path checks with a fake transport and temporary SQLite.
 // No LAN traffic, app launch or real notifications.
 import Foundation
+import zlib
 
 private final class TestTransport: FeiQNetworkServiceProtocol {
     var downloadData: Data?
@@ -58,6 +59,19 @@ private final class SilentNotifications: NotificationService {
 private final class ReceivedEvents {
     private let condition = NSCondition()
     private var values: [(message: ChatMessage, peer: FeiQPeer, isNew: Bool)] = []
+    private var logValues: [String] = []
+
+    func recordLog(_ value: String) {
+        condition.lock()
+        logValues.append(value)
+        condition.unlock()
+    }
+
+    var logs: [String] {
+        condition.lock()
+        defer { condition.unlock() }
+        return logValues
+    }
 
     func record(_ message: ChatMessage, peer: FeiQPeer, isNew: Bool) {
         condition.lock()
@@ -108,6 +122,8 @@ enum IncomingImageRepositoryChecks {
             case .messageUpdated(let message, let peer):
                 history.saveMessage(message, for: peer, unreadCount: 1)
                 events.record(message, peer: peer, isNew: false)
+            case .log(let value):
+                events.recordLog(value)
             default: break
             }
         }
@@ -251,6 +267,31 @@ enum IncomingImageRepositoryChecks {
         transport.onInlineImage?(Data([1, 2, 3]), "aabbccdd", 0, broken, ip)
         _ = events.waitFor { $0.text.contains("无法解码") }
         _ = events.waitFor { $0.text.contains("接收已超时") }
+        precondition(events.logs.contains { $0.contains("aabbccdd") && $0.contains("bitmap=0") && $0.contains("文件头=01 02 03") })
+        precondition(!events.logs.contains { $0.contains("只支持发送图片文件") })
+
+        for (index, imageBytes) in [dib, try Data(contentsOf: fixtureImage.localURL)].enumerated() {
+            let imageID = index == 0 ? "aa001122" : "aa003344"
+            let text = "Windows 压缩图片 \(index)"
+            let compressedPacket = FeiQPacket(packetNumber: UInt64(800 + index), senderName: "Win", senderHost: "PC",
+                                              command: .sendMessage, additionalText: text + "/~#>\(imageID)<B~")
+            let compressed = compressImage(imageBytes)
+            if index == 0 {
+                transport.onInlineImage?(compressed, imageID, 1, compressedPacket, ip)
+                transport.onPacket?(compressedPacket, ip, .udp, 2425)
+            } else {
+                transport.onPacket?(compressedPacket, ip, .udp, 2425)
+                transport.onInlineImage?(compressed, imageID, 0, compressedPacket, ip)
+            }
+            let received = events.waitFor { $0.text == text && $0.attachments.count == 1 }
+            precondition(received.attachments[0].isImage && received.attachments[0].isAvailable)
+            precondition(events.snapshot.filter { $0.message.id == received.id && $0.isNew }.count == 1)
+            history.loadRecentMessages(for: peer.id, limit: 60) { result in
+                precondition(try! result.get().messages.contains { $0.id == received.id && $0.attachments == received.attachments })
+                saved.signal()
+            }
+            precondition(saved.wait(timeout: .now() + 5) == .success)
+        }
 
         let originalImage = complete.attachments[0]
         let sharedMessage = ChatMessage(direction: .outgoing, text: "", attachments: [originalImage])
@@ -361,5 +402,19 @@ enum IncomingImageRepositoryChecks {
         precondition(saved.wait(timeout: .now() + 5) == .success)
         withExtendedLifetime(repository) {}
         print("Incoming image repository checks passed")
+    }
+
+    private static func compressImage(_ data: Data) -> Data {
+        var count = compressBound(uLong(data.count))
+        var output = Data(count: Int(count))
+        let status = data.withUnsafeBytes { input in
+            output.withUnsafeMutableBytes { destination in
+                compress2(destination.bindMemory(to: Bytef.self).baseAddress, &count,
+                          input.bindMemory(to: Bytef.self).baseAddress, uLong(data.count), Z_BEST_COMPRESSION)
+            }
+        }
+        precondition(status == Z_OK)
+        output.count = Int(count)
+        return output
     }
 }

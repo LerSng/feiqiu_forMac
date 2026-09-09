@@ -10,19 +10,20 @@ import AppKit
 
 struct ChatDetailView: View {
     @EnvironmentObject private var model: ChatViewModel
+    @State private var isDropTargeted = false
 
     var body: some View {
         Group {
             if let group = model.selectedGroup {
                 conversationView(
                     conversationID: group.id,
-                    conversationTitle: group.displayName,
+                    conversationTitle: model.displayName(for: group),
                     peer: nil
                 )
             } else if let peer = model.selectedPeer {
                 conversationView(
                     conversationID: peer.id,
-                    conversationTitle: peer.displayName,
+                    conversationTitle: model.displayName(for: peer),
                     peer: peer
                 )
             } else {
@@ -31,6 +32,34 @@ struct ChatDetailView: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .background(FeiQUI.chatBackground)
+        .onDrop(of: ChatAttachmentDrop.typeIdentifiers, isTargeted: $isDropTargeted) { providers in
+            isDropTargeted = false
+            return model.sendDroppedAttachments(providers)
+        }
+        .overlay {
+            if isDropTargeted {
+                VStack(spacing: 12) {
+                    Image(systemName: model.attachmentDropUnavailableReason == nil ? "tray.and.arrow.down.fill" : "exclamationmark.circle")
+                        .font(.system(size: 40))
+                    Text(model.attachmentDropUnavailableReason ?? "松开即可发送给 \(model.selectedGroup?.displayName ?? model.selectedPeer?.displayName ?? "当前会话")")
+                        .font(.title3.weight(.semibold))
+                    Text("支持多选图片与文件 · 不会发送输入框中的草稿")
+                        .font(.callout)
+                }
+                .multilineTextAlignment(.center)
+                .foregroundStyle(model.attachmentDropUnavailableReason == nil ? FeiQUI.accent : .orange)
+                .padding(28)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(FeiQUI.chatBackground.opacity(0.94))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18)
+                        .strokeBorder(FeiQUI.accent.opacity(0.65), style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                        .padding(14)
+                }
+                .allowsHitTesting(false)
+            }
+        }
+        .onChange(of: model.selectedConversationID) { _, _ in isDropTargeted = false }
         .animation(.easeInOut(duration: 0.22), value: model.selectedConversationID)
         .alert("图片删除失败", isPresented: Binding(
             get: { model.imageDeletionError != nil },
@@ -56,6 +85,14 @@ struct ChatDetailView: View {
         } message: {
             Text(model.messageDeletionError ?? "")
         }
+        .alert("拖拽发送提示", isPresented: Binding(
+            get: { model.dropSendError != nil },
+            set: { if !$0 { model.dropSendError = nil } }
+        )) {
+            Button("好", role: .cancel) { model.dropSendError = nil }
+        } message: {
+            Text(model.dropSendError ?? "")
+        }
     }
 
     @ViewBuilder
@@ -65,6 +102,52 @@ struct ChatDetailView: View {
         peer: FeiQPeer?
     ) -> some View {
         VStack(spacing: 0) {
+            if model.isSelectedConversationBlocked {
+                HStack(spacing: 10) {
+                    Image(systemName: "nosign")
+                    Text("此会话已屏蔽，历史记录仍可查看")
+                    Spacer()
+                    Button("解除屏蔽") { model.setConversationBlocked(false, for: conversationID) }
+                        .buttonStyle(.borderless)
+                        .disabled(model.savingConversationIDs.contains(conversationID))
+                }
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 10)
+                .background(FeiQUI.subtleFill)
+                Divider()
+            }
+            if model.isPreparingDrop {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("正在准备拖拽附件 \(model.dropPreparedCount)/\(model.dropItemCount)…")
+                    Spacer()
+                    Button("取消发送") { model.cancelDroppedAttachments() }
+                        .buttonStyle(.borderless)
+                }
+                .font(.caption)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 10)
+                .background(FeiQUI.subtleFill)
+                Divider()
+            }
+            if model.isBrowsingHistory {
+                HStack(spacing: 8) {
+                    Image(systemName: "clock.arrow.circlepath")
+                    Text("正在查看历史消息")
+                    Spacer()
+                    Button("回到最新消息") { model.returnToLatestMessages() }
+                        .buttonStyle(.borderless)
+                }
+                .font(.caption)
+                .foregroundStyle(FeiQUI.accent)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 10)
+                .background(FeiQUI.subtleFill)
+                Divider()
+            }
+
             MessageList(
                 conversationID: conversationID,
                 conversationTitle: conversationTitle,
@@ -75,7 +158,7 @@ struct ChatDetailView: View {
             .layoutPriority(1)
 
             Divider()
-            MessageComposer()
+            MessageComposer(onDropTargeted: { isDropTargeted = $0 })
         }
     }
 }
@@ -138,6 +221,11 @@ private struct MessageList: View {
                                     ProgressView()
                                         .controlSize(.small)
                                     Text("正在加载更早的聊天记录…")
+                                } else if model.isBrowsingHistory {
+                                    Button("加载更早消息") {
+                                        loadEarlierMessages(before: firstMessage, using: proxy)
+                                    }
+                                    .buttonStyle(.borderless)
                                 } else {
                                     Text("向上滚动加载更早的聊天记录")
                                 }
@@ -153,21 +241,8 @@ private struct MessageList: View {
                                     .stroke(FeiQUI.separator, lineWidth: 1)
                             }
                             .onAppear {
-                                model.loadEarlierMessages(
-                                    for: conversationID,
-                                    before: firstMessage
-                                ) {
-                                    DispatchQueue.main.async {
-                                        var transaction = Transaction(animation: nil)
-                                        transaction.disablesAnimations = true
-                                        withTransaction(transaction) {
-                                            proxy.scrollTo(
-                                                firstMessage.id,
-                                                anchor: .top
-                                            )
-                                        }
-                                    }
-                                }
+                                guard !model.isBrowsingHistory else { return }
+                                loadEarlierMessages(before: firstMessage, using: proxy)
                             }
                         }
 
@@ -184,6 +259,13 @@ private struct MessageList: View {
                                 peer: peer
                             )
                                 .id(message.id)
+                                .background {
+                                    if model.highlightedMessageID == message.id {
+                                        RoundedRectangle(cornerRadius: 14)
+                                            .fill(FeiQUI.accent.opacity(0.12))
+                                            .padding(-6)
+                                    }
+                                }
                                 .transition(messageTransition(for: message))
                                 .opacity(
                                     showingMessages
@@ -200,6 +282,27 @@ private struct MessageList: View {
                                         : initialScale(for: message),
                                     anchor: message.direction == .outgoing ? .trailing : .leading
                                 )
+                        }
+
+                        if model.hasLaterMessages, let lastMessage = messages.last {
+                            Button {
+                                model.loadLaterMessages(for: conversationID, after: lastMessage) {
+                                    DispatchQueue.main.async {
+                                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    if model.isLoadingMessages {
+                                        ProgressView().controlSize(.small)
+                                    }
+                                    Text(model.isLoadingMessages ? "正在加载…" : "加载后续消息")
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(model.isLoadingMessages)
                         }
                     }
 
@@ -241,13 +344,14 @@ private struct MessageList: View {
                 guard !isLoading else { return }
                 if !didFinishInitialLoad {
                     didFinishInitialLoad = true
-                    scrollToLatestWhenLaidOut(using: proxy, animated: false)
+                    scrollToNavigationTarget(using: proxy)
                 }
                 lastRenderedMessageID = messages.last?.id
             }
             .onChange(of: latestMessageID) { _, _ in
                 guard showingMessages,
                       didFinishInitialLoad,
+                      !model.isBrowsingHistory,
                       !model.isLoadingMessages else {
                     return
                 }
@@ -256,7 +360,43 @@ private struct MessageList: View {
                 lastRenderedMessageID = latestMessageID
                 scrollToLatestWhenLaidOut(using: proxy, animated: true)
             }
+            .onChange(of: model.messageNavigationID) { _, _ in
+                didFinishInitialLoad = !model.isLoadingMessages
+                lastRenderedMessageID = messages.last?.id
+                if !model.isLoadingMessages { scrollToNavigationTarget(using: proxy) }
+            }
         }
+    }
+
+    private func loadEarlierMessages(before message: ChatMessage, using proxy: ScrollViewProxy) {
+        model.loadEarlierMessages(for: conversationID, before: message) {
+            DispatchQueue.main.async {
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    proxy.scrollTo(message.id, anchor: .top)
+                }
+            }
+        }
+    }
+
+    private func scrollToNavigationTarget(using proxy: ScrollViewProxy) {
+        guard model.isBrowsingHistory, let messageID = model.highlightedMessageID else {
+            scrollToLatestWhenLaidOut(using: proxy, animated: false)
+            return
+        }
+        let navigationID = model.messageNavigationID
+        let scroll = {
+            guard model.messageNavigationID == navigationID,
+                  model.selectedConversationID == conversationID else { return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(messageID, anchor: .center)
+            }
+        }
+        scroll()
+        DispatchQueue.main.async(execute: scroll)
     }
 
     private func presentMessages(using proxy: ScrollViewProxy) {
@@ -267,7 +407,7 @@ private struct MessageList: View {
             didFinishInitialLoad = true
             lastRenderedMessageID = messages.last?.id
         }
-        scrollToLatestWhenLaidOut(using: proxy, animated: false)
+        scrollToNavigationTarget(using: proxy)
 
         DispatchQueue.main.async {
             if mode == .instant {
@@ -281,7 +421,7 @@ private struct MessageList: View {
             // 进入动画改变了消息的可见状态，再补一次无动画定位，避免
             // SwiftUI 在动画结束后把 ScrollView 恢复到默认顶部位置。
             DispatchQueue.main.async {
-                scrollToLatest(using: proxy, animated: false)
+                scrollToNavigationTarget(using: proxy)
             }
         }
     }
@@ -360,7 +500,7 @@ private struct MessageList: View {
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy, animated: Bool) {
-        guard !messages.isEmpty else { return }
+        guard !messages.isEmpty, !model.isBrowsingHistory else { return }
 
         if animated {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
@@ -630,6 +770,7 @@ private struct FeiQMessageBubbleShape: Shape {
 
 private struct MessageComposer: View {
     @EnvironmentObject private var model: ChatViewModel
+    let onDropTargeted: (Bool) -> Void
     @State private var showingEmojiPicker = false
     @AppStorage("chat.composer.editorHeight") private var savedEditorHeight = 112.0
     @State private var editorHeight: CGFloat = 112
@@ -670,14 +811,17 @@ private struct MessageComposer: View {
                         text: $model.draft,
                         onPasteImage: { data, fileName in
                             model.pasteImage(data, suggestedFileName: fileName)
-                        }
+                        },
+                        allowsAttachmentDrop: model.attachmentDropUnavailableReason == nil,
+                        onDropAttachments: { model.sendDroppedAttachments($0) },
+                        onDropTargeted: onDropTargeted
                     )
                         .font(.body)
                         .frame(maxWidth: .infinity)
                         .frame(height: editorHeight)
 
                     if model.draft.isEmpty && model.draftAttachments.isEmpty {
-                        Text("输入消息")
+                        Text(model.isSelectedConversationBlocked ? "会话已屏蔽，解除后可发送" : "输入消息，或拖入图片 / 文件直接发送")
                             .font(.body)
                             .foregroundStyle(.tertiary)
                             .padding(.horizontal, 8)
@@ -716,6 +860,7 @@ private struct MessageComposer: View {
                     .help("发送图片")
                     .disabled(
                         model.selectedConversationID == nil
+                            || model.isSelectedConversationBlocked
                             || model.isPreparingPastedImage
                             || model.isPreparingAttachment
                     )
@@ -734,6 +879,7 @@ private struct MessageComposer: View {
                     .help("截取屏幕并添加到输入框")
                     .disabled(
                         model.selectedConversationID == nil
+                            || model.isSelectedConversationBlocked
                             || model.isCapturingScreenshot
                             || model.isPreparingPastedImage
                             || model.isPreparingAttachment
@@ -745,7 +891,7 @@ private struct MessageComposer: View {
                         Image(systemName: "paperclip")
                     }
                     .help("添加文件")
-                    .disabled(model.selectedConversationID == nil || model.isPreparingAttachment)
+                    .disabled(model.selectedConversationID == nil || model.isPreparingAttachment || model.isSelectedConversationBlocked)
 
                     if model.selectedPeer != nil {
                         Divider()
@@ -816,7 +962,8 @@ private struct MessageComposer: View {
     }
 
     private var canSend: Bool {
-        !model.isPreparingPastedImage
+        !model.isSelectedConversationBlocked
+            && !model.isPreparingPastedImage
             && !model.isPreparingAttachment
             && !model.isCapturingScreenshot
             && (!model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

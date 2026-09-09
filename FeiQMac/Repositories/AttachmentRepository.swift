@@ -25,6 +25,7 @@ protocol AttachmentRepository: AnyObject {
     ) throws -> ChatAttachment
     func deleteManagedImage(_ attachment: ChatAttachment) throws
     func deleteManagedAttachment(_ attachment: ChatAttachment) throws
+    func importAttachment(_ attachment: ChatAttachment, from sourceURL: URL) throws -> ChatAttachment
 }
 
 final class DefaultAttachmentRepository: AttachmentRepository {
@@ -36,6 +37,10 @@ final class DefaultAttachmentRepository: AttachmentRepository {
 
     init(storageService: ChatAttachmentStorageService) {
         self.storageService = storageService
+    }
+
+    func importAttachment(_ attachment: ChatAttachment, from sourceURL: URL) throws -> ChatAttachment {
+        try storageService.importAttachment(attachment, from: sourceURL)
     }
 
     func prepareOutgoingImage(from sourceURL: URL) throws -> ChatAttachment {

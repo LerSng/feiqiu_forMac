@@ -34,9 +34,11 @@ struct FileTransferRecord: Identifiable, Sendable {
     let attachment: ChatAttachment
     let direction: FileTransferDirection
     let peerName: String
-    let ipAddress: String
+    var ipAddress: String
     let messageID: UUID?
     let createdAt: Date
+    var conversationID: String?
+    var peerID: String?
     var state: FileTransferState = .queued
     var bytesTransferred: Int64 = 0
     var bytesPerSecond: Double = 0

@@ -51,6 +51,7 @@ enum FeiQFileTransferError: LocalizedError, Equatable {
 protocol FeiQNetworkServiceProtocol: FeiQNetworkEventSource {
     func start(name: String, host: String, group: String)
     func stop()
+    func stop(completion: @escaping () -> Void)
     func updateIdentity(name: String, host: String, group: String)
     func announce()
     func replyToEntry(from ipAddress: String)
@@ -99,6 +100,11 @@ protocol FeiQNetworkServiceProtocol: FeiQNetworkEventSource {
 }
 
 extension FeiQNetworkServiceProtocol {
+    func stop(completion: @escaping () -> Void) {
+        stop()
+        completion()
+    }
+
     func uploadFile(
         _ attachment: ChatAttachment,
         text: String,
@@ -240,8 +246,13 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
     }
 
     func stop() {
+        stop(completion: {})
+    }
+
+    func stop(completion: @escaping () -> Void) {
         queue.async { [weak self] in
             self?.stopInternal(announceExit: true)
+            completion()
         }
     }
 
@@ -1222,7 +1233,7 @@ final class FeiQNetworkService: FeiQNetworkServiceProtocol {
                 _ = sendUDP(standardAck.encoded(), to: ipAddress, port: sourcePort)
             }
             if let bytes = result.data {
-                emitLog("UDP ← \(ipAddress)：内嵌图片 \(chunk.imageID) 重组完成（\(bytes.count) bytes）")
+                emitLog("UDP ← \(ipAddress)：内嵌图片 \(chunk.imageID) 重组完成（\(bytes.count) bytes，bitmap=\(chunk.bitmapFlag)，format=\(chunk.formatFlag)，\(chunk.totalChunks) 片）")
                 onInlineImage?(bytes, chunk.imageID, chunk.bitmapFlag, packet, ipAddress)
             }
             return

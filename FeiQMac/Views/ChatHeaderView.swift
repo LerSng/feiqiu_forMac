@@ -41,13 +41,13 @@ struct ConversationToolbarView: View {
         if let peer = model.selectedPeer {
             HStack(spacing: isCompact ? 6 : 9) {
                 ContactAvatar(
-                    name: peer.displayName,
+                    name: model.displayName(for: peer),
                     isOnline: peer.isOnline,
                     size: isCompact ? 23 : 28,
                     showsStatus: false
                 )
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(peer.displayName)
+                    Text(model.displayName(for: peer))
                         .font(.system(size: isCompact ? 12 : 14, weight: .semibold))
                         .lineLimit(1)
                     HStack(spacing: 5) {
@@ -75,7 +75,7 @@ struct ConversationToolbarView: View {
             HStack(spacing: isCompact ? 6 : 9) {
                 GroupAvatar(size: isCompact ? 23 : 28)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(group.displayName)
+                    Text(model.displayName(for: group))
                         .font(.system(size: isCompact ? 12 : 14, weight: .semibold))
                         .lineLimit(1)
                     Text(
@@ -96,6 +96,27 @@ struct ConversationToolbarView: View {
 
     @ViewBuilder
     private func actionView(isCompact: Bool) -> some View {
+        if let identifier = model.selectedConversationID {
+            Menu {
+                ConversationManagementActions(conversationID: identifier)
+            } label: {
+                Image(systemName: "ellipsis.bubble")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("会话管理：置顶、免打扰、备注、标签、屏蔽")
+            .accessibilityLabel("会话管理")
+        }
+        Button {
+            model.openHistorySearch(for: model.selectedConversationID)
+        } label: {
+            Image(systemName: "magnifyingglass")
+        }
+        .buttonStyle(FeiQIconButtonStyle(size: isCompact ? 27 : 32))
+        .help("搜索当前会话的历史消息（⌘F）")
+        .accessibilityLabel("搜索当前会话的历史消息")
+        .keyboardShortcut("f", modifiers: .command)
+
         if let peer = model.selectedPeer {
             HStack(spacing: 2) {
                 Button {

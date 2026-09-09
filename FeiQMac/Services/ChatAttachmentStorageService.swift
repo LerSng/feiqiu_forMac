@@ -20,6 +20,7 @@ protocol ChatAttachmentStorageService: AnyObject {
     func saveInlineImage(_ data: Data, imageID: String, isBitmap: Bool) throws -> ChatAttachment
     func deleteManagedImage(_ attachment: ChatAttachment) throws
     func deleteManagedAttachment(_ attachment: ChatAttachment) throws
+    func importAttachment(_ attachment: ChatAttachment, from sourceURL: URL) throws -> ChatAttachment
 }
 
 enum ChatAttachmentStorageError: LocalizedError {
@@ -33,7 +34,7 @@ enum ChatAttachmentStorageError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedImage:
-            return "只支持发送图片文件"
+            return "无法识别或解码图片文件"
         case .unsupportedFile:
             return "不支持发送文件夹或特殊文件"
         case .sourceFileUnavailable:
@@ -106,6 +107,7 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
     }
 
     func deleteManagedAttachment(_ attachment: ChatAttachment) throws {
+        guard !attachment.localPath.isEmpty else { return }
         let target = attachment.localURL.standardizedFileURL.resolvingSymlinksInPath()
         let allowedDirectories = [imagesDirectoryURL, filesDirectoryURL].map {
             $0.standardizedFileURL.resolvingSymlinksInPath()
@@ -166,6 +168,27 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
             data: data,
             suggestedFileName: suggestedFileName ?? "clipboard-image",
             modifiedAt: Date()
+        )
+    }
+
+    func importAttachment(_ attachment: ChatAttachment, from sourceURL: URL) throws -> ChatAttachment {
+        let values = try sourceURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw ChatAttachmentStorageError.unsupportedFile
+        }
+        guard let fileSize = values.fileSize, Int64(fileSize) == attachment.fileSize,
+              Int64(fileSize) <= Self.maximumFileBytes else {
+            throw ChatAttachmentStorageError.invalidFileSize
+        }
+        let directory = attachment.isImage ? imagesDirectoryURL : filesDirectoryURL
+        let suffix = String(sourceURL.pathExtension.filter { $0.isASCII && ($0.isLetter || $0.isNumber) }.prefix(12))
+        let name = UUID().uuidString + (suffix.isEmpty ? "" : ".\(suffix)")
+        let destination = directory.appendingPathComponent(name)
+        try fileManager.copyItem(at: sourceURL, to: destination)
+        return ChatAttachment(
+            id: attachment.id, kind: attachment.kind, fileName: attachment.fileName,
+            fileSize: attachment.fileSize, modifiedAt: attachment.modifiedAt,
+            fileAttributes: attachment.fileAttributes, localPath: destination.path, mimeType: attachment.mimeType
         )
     }
 
@@ -324,18 +347,8 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
     }
 
     func saveInlineImage(_ data: Data, imageID: String, isBitmap: Bool) throws -> ChatAttachment {
-        guard !data.isEmpty, data.count <= FeiQInlineImageCodec.maximumBytes else {
-            throw ChatAttachmentStorageError.invalidFileSize
-        }
-        // The bitmap flag differs across clients and image sources. Prefer
-        // an actual image container (JPEG/PNG/BMP), then a validated raw DIB.
-        // Do not reject a decodable JPEG solely because bitmapFlag is 1.
-        let jpeg: Data
-        if let decoded = try? Self.jpegData(from: data) {
-            jpeg = decoded
-        } else {
-            jpeg = try Self.jpegData(from: Self.bitmapFile(from: data))
-        }
+        let image = try FeiQInlineImageDecoder.decode(data)
+        let jpeg = try Self.jpegData(from: image)
         let descriptor = FeiQFileAttachment(fileID: imageID, fileName: "\(imageID).jpg",
                                             fileSize: Int64(jpeg.count), modifiedAt: Int64(Date().timeIntervalSince1970), fileAttributes: 1)
         let attachment = try prepareIncomingImage(for: descriptor)
@@ -357,6 +370,10 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
                 ?? CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             throw ChatAttachmentStorageError.unsupportedImage
         }
+        return try jpegData(from: image)
+    }
+
+    private static func jpegData(from image: CGImage) throws -> Data {
         let result = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(result, UTType.jpeg.identifier as CFString, 1, nil) else {
             throw ChatAttachmentStorageError.unsupportedImage
@@ -366,39 +383,6 @@ final class LocalChatAttachmentStorageService: ChatAttachmentStorageService {
             throw ChatAttachmentStorageError.invalidFileSize
         }
         return Data(result)
-    }
-
-    /// FeiQ bitmap flag 1 carries a DIB without BITMAPFILEHEADER.
-    private static func bitmapFile(from dib: Data) throws -> Data {
-        if dib.starts(with: [0x42, 0x4d]) { return dib }
-        guard dib.count >= 40 else { throw ChatAttachmentStorageError.unsupportedImage }
-        func uint32(_ offset: Int) -> Int {
-            (0..<4).reduce(0) { $0 | (Int(dib[offset + $1]) << ($1 * 8)) }
-        }
-        let headerSize = uint32(0)
-        guard [40, 52, 56, 108, 124].contains(headerSize), dib.count >= headerSize else {
-            throw ChatAttachmentStorageError.unsupportedImage
-        }
-        let bitCount = Int(dib[14]) | Int(dib[15]) << 8
-        let compression = uint32(16)
-        guard [1, 4, 8, 16, 24, 32].contains(bitCount),
-              dib[12] == 1, dib[13] == 0,
-              [0, 3, 6].contains(compression) else {
-            throw ChatAttachmentStorageError.unsupportedImage
-        }
-        let colors = uint32(32) > 0 ? uint32(32) : (bitCount <= 8 ? 1 << bitCount : 0)
-        let masks = headerSize == 40 ? (compression == 3 ? 12 : (compression == 6 ? 16 : 0)) : 0
-        let offset = 14 + headerSize + masks + colors * 4
-        guard offset <= dib.count + 14 else { throw ChatAttachmentStorageError.unsupportedImage }
-        var header = Data([0x42, 0x4d])
-        func appendUInt32(_ value: Int) {
-            for shift in stride(from: 0, to: 32, by: 8) { header.append(UInt8(truncatingIfNeeded: value >> shift)) }
-        }
-        appendUInt32(dib.count + 14)
-        appendUInt32(0)
-        appendUInt32(offset)
-        header.append(dib)
-        return header
     }
 
     private static func safeFileName(_ fileName: String) -> String {

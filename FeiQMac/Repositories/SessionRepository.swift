@@ -14,9 +14,10 @@ protocol SessionRepository: AnyObject {
     func savePeer(_ peer: FeiQPeer)
     func restore(_ peers: [FeiQPeer])
     func peers(withIDs ids: [String]) -> [FeiQPeer]
+    func peers(at ipAddress: String) -> [FeiQPeer]
     @discardableResult
     func upsertPeer(packet: FeiQPacket, ipAddress: String) -> FeiQPeer
-    func markPeerOffline(ipAddress: String) -> FeiQPeer?
+    func markPeerOffline(packet: FeiQPacket, ipAddress: String) -> FeiQPeer?
     func markOffline(before cutoff: Date) -> [FeiQPeer]
 }
 
@@ -46,16 +47,18 @@ final class DefaultSessionRepository: SessionRepository {
     }
 
     func savePeer(_ peer: FeiQPeer) {
-        queue.sync {
-            peersByID[peer.id] = peer
+        let current = queue.sync { () -> FeiQPeer in
+            let current = peersByID[peer.id].flatMap { $0.lastSeen > peer.lastSeen ? $0 : nil } ?? peer
+            peersByID[peer.id] = current
+            return current
         }
-        historyService.savePeer(peer)
+        historyService.savePeer(current)
     }
 
     func restore(_ peers: [FeiQPeer]) {
         queue.sync {
             for peer in peers {
-                if let livePeer = peersByID[peer.id], livePeer.isOnline {
+                if let livePeer = peersByID[peer.id], livePeer.isOnline || livePeer.lastSeen > peer.lastSeen {
                     continue
                 }
                 peersByID[peer.id] = peer
@@ -69,11 +72,12 @@ final class DefaultSessionRepository: SessionRepository {
         }
     }
 
+    func peers(at ipAddress: String) -> [FeiQPeer] {
+        queue.sync { peersByID.values.filter { $0.ipAddress == ipAddress } }
+    }
+
     @discardableResult
     func upsertPeer(packet: FeiQPacket, ipAddress: String) -> FeiQPeer {
-        let stableID = ipAddress == "未知地址" || ipAddress.isEmpty
-            ? packet.senderHost
-            : ipAddress
         let isPresencePacket = packet.commandType == .broadcastEntry
             || packet.commandType == .answerEntry
             || packet.isFeiQPresencePacket
@@ -93,8 +97,17 @@ final class DefaultSessionRepository: SessionRepository {
         let presenceGroup = packet.entryGroup?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        let result = queue.sync { () -> (peer: FeiQPeer, shouldPersist: Bool) in
-            if let existingPeer = peersByID[stableID] {
+        let result = queue.sync { () -> (peer: FeiQPeer, shouldPersist: Bool, displaced: [FeiQPeer]) in
+            let existingPeer = PeerIdentity.resolve(packet: packet, address: ipAddress, peers: Array(peersByID.values))
+            let stableID = existingPeer?.id ?? "peer-" + UUID().uuidString
+            var displaced: [FeiQPeer] = []
+            for candidate in peersByID.values where candidate.id != stableID && candidate.ipAddress == ipAddress && candidate.isOnline {
+                var offline = candidate
+                offline.isOnline = false
+                peersByID[offline.id] = offline
+                displaced.append(offline)
+            }
+            if let existingPeer {
                 var peer = existingPeer
                 let name: String
                 let host: String
@@ -120,6 +133,7 @@ final class DefaultSessionRepository: SessionRepository {
                     || peer.hostName != host
                     || peer.ipAddress != ipAddress
                     || peer.group != updatedGroup
+                    || PeerIdentity.deviceIdentifier(packet.feiQDeviceIdentifier).map { $0 != peer.deviceIdentifier } == true
                 let becameOnline = !peer.isOnline
                 peer.name = name
                 peer.hostName = host
@@ -127,8 +141,9 @@ final class DefaultSessionRepository: SessionRepository {
                 peer.group = updatedGroup
                 peer.lastSeen = Date()
                 peer.isOnline = true
+                peer.deviceIdentifier = PeerIdentity.deviceIdentifier(packet.feiQDeviceIdentifier) ?? peer.deviceIdentifier
                 peersByID[stableID] = peer
-                return (peer, metadataChanged || becameOnline)
+                return (peer, metadataChanged || becameOnline, displaced)
             }
 
             let peer = FeiQPeer(
@@ -138,26 +153,28 @@ final class DefaultSessionRepository: SessionRepository {
                 ipAddress: ipAddress,
                 group: isPresencePacket ? presenceGroup : "",
                 lastSeen: Date(),
-                isOnline: true
+                isOnline: true,
+                deviceIdentifier: PeerIdentity.deviceIdentifier(packet.feiQDeviceIdentifier)
             )
             peersByID[stableID] = peer
-            return (peer, true)
+            return (peer, true, displaced)
         }
 
+        for peer in result.displaced { historyService.savePeer(peer) }
         if result.shouldPersist {
             historyService.savePeer(result.peer)
         }
         return result.peer
     }
 
-    func markPeerOffline(ipAddress: String) -> FeiQPeer? {
+    func markPeerOffline(packet: FeiQPacket, ipAddress: String) -> FeiQPeer? {
         let peer = queue.sync { () -> FeiQPeer? in
-            guard let peerID = peersByID.first(where: { $0.value.ipAddress == ipAddress })?.key,
-                  var peer = peersByID[peerID] else {
+            guard var peer = PeerIdentity.resolve(packet: packet, address: ipAddress, peers: Array(peersByID.values)),
+                  peer.ipAddress == ipAddress else {
                 return nil
             }
             peer.isOnline = false
-            peersByID[peerID] = peer
+            peersByID[peer.id] = peer
             return peer
         }
 

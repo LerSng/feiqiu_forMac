@@ -9,6 +9,7 @@ import SwiftUI
 import AppKit
 
 struct PeerProfileCard: View {
+    @EnvironmentObject private var model: ChatViewModel
     let peer: FeiQPeer
 
     private static let lastSeenFormatter: DateFormatter = {
@@ -21,10 +22,10 @@ struct PeerProfileCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                ContactAvatar(name: peer.displayName, isOnline: peer.isOnline, size: 48)
+                ContactAvatar(name: model.displayName(for: peer), isOnline: peer.isOnline, size: 48)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(peer.displayName)
+                    Text(model.displayName(for: peer))
                         .font(.headline.weight(.semibold))
                         .lineLimit(1)
                     HStack(spacing: 5) {
@@ -37,6 +38,13 @@ struct PeerProfileCard: View {
             }
 
             Divider()
+
+            if !model.conversationSettings(for: peer.id).remark.isEmpty {
+                PeerProfileValue(title: "原昵称", value: peer.displayName)
+            }
+            if !model.conversationSettings(for: peer.id).tags.isEmpty {
+                PeerProfileValue(title: "标签", value: model.conversationSettings(for: peer.id).tags.joined(separator: "、"))
+            }
 
             PeerProfileValue(title: "主机名", value: peer.hostName)
             PeerProfileValue(title: "IP 地址", value: peer.ipAddress)

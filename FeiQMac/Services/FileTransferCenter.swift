@@ -53,15 +53,19 @@ final class FileTransferCenter {
         peerName: String,
         ipAddress: String,
         messageID: UUID? = nil,
+        conversationID: String? = nil,
+        peerID: String? = nil,
         operation: @escaping Operation,
         completion: @escaping (Result<Void, Error>) -> Void = { _ in }
     ) -> UUID {
         let identifier = UUID()
         queue.async {
-            let record = FileTransferRecord(
+            var record = FileTransferRecord(
                 id: identifier, attachment: attachment, direction: direction,
                 peerName: peerName, ipAddress: ipAddress, messageID: messageID, createdAt: Date()
             )
+            record.conversationID = conversationID
+            record.peerID = peerID
             self.entries[identifier] = Entry(record: record, operation: operation, completion: completion)
             self.order.append(identifier)
             self.schedule()
@@ -73,6 +77,18 @@ final class FileTransferCenter {
         queue.async {
             self.isPaused = paused
             self.schedule()
+        }
+    }
+
+    func updatePeerAddress(_ peer: FeiQPeer) {
+        queue.async {
+            var changed = false
+            for entry in self.entries.values where entry.record.peerID == peer.id
+                && entry.record.state != .completed && entry.record.ipAddress != peer.ipAddress {
+                entry.record.ipAddress = peer.ipAddress
+                changed = true
+            }
+            if changed { self.publish() }
         }
     }
 
@@ -114,10 +130,10 @@ final class FileTransferCenter {
         }
     }
 
-    func cancelAll(pauseQueue: Bool = false) {
+    func cancelAll(pauseQueue: Bool = false, direction: FileTransferDirection? = nil) {
         queue.async {
             if pauseQueue { self.isPaused = true }
-            for identifier in self.order {
+            for identifier in self.order where direction == nil || self.entries[identifier]?.record.direction == direction {
                 self.cancelEntry(identifier)
             }
             self.schedule()
@@ -145,9 +161,12 @@ final class FileTransferCenter {
         }
     }
 
-    func retryFailed() {
+    func retryFailed(direction: FileTransferDirection? = nil) {
         queue.async {
-            let identifiers = self.order.filter { self.entries[$0]?.record.state == .failed }
+            let identifiers = self.order.filter {
+                self.entries[$0]?.record.state == .failed
+                    && (direction == nil || self.entries[$0]?.record.direction == direction)
+            }
             for identifier in identifiers {
                 self.prepareRetry(identifier)
             }
@@ -164,11 +183,12 @@ final class FileTransferCenter {
         }
     }
 
-    func clearFinished() {
+    func clearFinished(direction: FileTransferDirection? = nil) {
         queue.async {
             let identifiers = self.order.filter {
                 let state = self.entries[$0]?.record.state
-                return state == .completed || state == .cancelled
+                return (state == .completed || state == .cancelled)
+                    && (direction == nil || self.entries[$0]?.record.direction == direction)
             }
             for identifier in identifiers {
                 self.entries.removeValue(forKey: identifier)

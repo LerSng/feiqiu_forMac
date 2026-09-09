@@ -14,10 +14,14 @@ protocol NotificationService: AnyObject {
 
 final class FeiQNotificationService: NSObject, NotificationService, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
+    private let settingsService: AppSettingsService
+    private let soundService: NotificationSoundService
 
     var onNotificationSelected: ((String) -> Void)?
 
-    override init() {
+    init(settingsService: AppSettingsService = UserDefaultsAppSettingsService(), soundService: NotificationSoundService = NotificationSoundService()) {
+        self.settingsService = settingsService
+        self.soundService = soundService
         super.init()
         center.delegate = self
     }
@@ -31,11 +35,24 @@ final class FeiQNotificationService: NSObject, NotificationService, UNUserNotifi
         text: String,
         conversationID: String
     ) {
+        let sound: UNNotificationSound?
+        do { sound = try soundService.notificationSound(for: settingsService.load().messageNotificationSound) }
+        catch { sound = .default }
+        let content = Self.makeContent(from: sender, text: text, conversationID: conversationID, sound: sound)
+        let request = UNNotificationRequest(
+            identifier: "feiq.incoming.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        center.add(request)
+    }
+
+    static func makeContent(from sender: String, text: String, conversationID: String, sound: UNNotificationSound?) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         let displaySender = sender.trimmingCharacters(in: .whitespacesAndNewlines)
         content.title = displaySender.isEmpty ? "收到新消息" : "\(displaySender) 发来消息"
         content.body = Self.previewText(text)
-        content.sound = .default
+        content.sound = sound
         content.userInfo = [
             "feiq.conversationID": conversationID,
             // Keep the old key so notifications created by older builds can
@@ -43,12 +60,7 @@ final class FeiQNotificationService: NSObject, NotificationService, UNUserNotifi
             "feiq.peerID": conversationID
         ]
 
-        let request = UNNotificationRequest(
-            identifier: "feiq.incoming.\(UUID().uuidString)",
-            content: content,
-            trigger: nil
-        )
-        center.add(request)
+        return content
     }
 
     func userNotificationCenter(

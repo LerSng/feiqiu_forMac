@@ -42,7 +42,7 @@ struct SidebarView: View {
             VStack(spacing: 14) {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("搜索联系人或群聊", text: $model.searchText)
+                    TextField("搜索名称、备注或标签", text: $model.searchText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
                     if !model.searchText.isEmpty {
@@ -61,6 +61,27 @@ struct SidebarView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .accessibilityLabel("会话筛选")
+                HStack {
+                    Menu {
+                        Button("全部标签") { model.selectedConversationTag = nil }
+                        ForEach(model.conversationTags, id: \.self) { tag in
+                            Button(tag) { model.selectedConversationTag = tag }
+                        }
+                        if model.conversationTags.isEmpty {
+                            Text("右键会话可添加标签")
+                        }
+                    } label: {
+                        Label(model.selectedConversationTag ?? "全部标签", systemImage: "tag")
+                            .lineLimit(1)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .help("按标签筛选会话")
+                    Spacer(minLength: 4)
+                    Toggle("仅屏蔽", isOn: $model.showsBlockedConversationsOnly)
+                        .toggleStyle(.checkbox)
+                        .help("只显示被屏蔽的联系人与群聊，可右键解除屏蔽")
+                }
+                .font(.caption)
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 12)
@@ -89,7 +110,7 @@ struct SidebarView: View {
                     Image(systemName: "arrow.up.arrow.down.square")
                         .foregroundStyle(FeiQUI.accent)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("文件传输中心")
+                        Text("下载中心")
                             .font(.system(size: 12, weight: .medium))
                         Text(transferSummary)
                             .font(.system(size: 10))
@@ -164,33 +185,27 @@ struct SidebarView: View {
             if peers.isEmpty && groups.isEmpty {
                 emptyState
             } else {
-                let online = peers.filter(\.isOnline)
+                let pinnedPeers = peers.filter { model.conversationSettings(for: $0.id).isPinned }
+                let pinnedGroups = groups.filter { model.conversationSettings(for: $0.id).isPinned }
+                let regularGroups = groups.filter { !model.conversationSettings(for: $0.id).isPinned }
+                if !pinnedPeers.isEmpty || !pinnedGroups.isEmpty {
+                    sectionTitle("置顶", count: pinnedPeers.count + pinnedGroups.count)
+                    ForEach(pinnedPeers) { peerRow($0) }
+                    ForEach(pinnedGroups) { groupRow($0) }
+                }
+                let online = peers.filter { $0.isOnline && !model.conversationSettings(for: $0.id).isPinned }
                 if !online.isEmpty {
                     sectionTitle("在线", count: online.count)
                     ForEach(online) { peerRow($0) }
                 }
-                if !groups.isEmpty {
-                    sectionTitle("群聊", count: groups.count)
+                if !regularGroups.isEmpty {
+                    sectionTitle("群聊", count: regularGroups.count)
                         .padding(.top, online.isEmpty ? 0 : 12)
-                    ForEach(groups) { group in
-                        ConversationRow(
-                            title: group.displayName, subtitle: "\(group.memberCount) 位成员",
-                            unreadCount: model.unreadCount(for: group.id),
-                            isSelected: model.selectedGroupID == group.id
-                        ) {
-                            GroupAvatar(size: 42)
-                        } action: {
-                            model.selectGroup(group.id)
-                        }
-                        .contextMenu {
-                            Button("群聊设置") { model.openGroupEditor(for: group.id) }
-                            Button("删除群聊", role: .destructive) { model.deleteGroup(group.id) }
-                        }
-                    }
+                    ForEach(regularGroups) { groupRow($0) }
                 }
-                let offline = peers.filter { !$0.isOnline }
+                let offline = peers.filter { !$0.isOnline && !model.conversationSettings(for: $0.id).isPinned }
                 if !offline.isEmpty {
-                    if filter == .unread || !model.searchText.isEmpty {
+                    if filter == .unread || !model.searchText.isEmpty || model.selectedConversationTag != nil || model.showsBlockedConversationsOnly {
                         sectionTitle("离线", count: offline.count).padding(.top, 12)
                         ForEach(offline) { peerRow($0) }
                     } else {
@@ -272,15 +287,39 @@ struct SidebarView: View {
 
     private func peerRow(_ peer: FeiQPeer) -> some View {
         ConversationRow(
-            title: peer.displayName, subtitle: peer.isOnline ? peer.ipAddress : "离线 · \(peer.ipAddress)",
+            title: model.displayName(for: peer), subtitle: peer.isOnline ? peer.ipAddress : "离线 · \(peer.ipAddress)",
             unreadCount: model.unreadCount(for: peer.id),
-            isSelected: model.selectedGroupID == nil && model.selectedPeerID == peer.id
+            isSelected: model.selectedGroupID == nil && model.selectedPeerID == peer.id,
+            settings: model.conversationSettings(for: peer.id)
         ) {
-            ContactAvatar(name: peer.displayName, isOnline: peer.isOnline, size: 42)
+            ContactAvatar(name: model.displayName(for: peer), isOnline: peer.isOnline, size: 42)
         } action: {
             model.selectPeer(peer.id)
         }
-        .contextMenu { Text(peer.detailText) }
+        .contextMenu {
+            ConversationManagementActions(conversationID: peer.id)
+            Divider()
+            Text(peer.detailText)
+        }
+    }
+
+    private func groupRow(_ group: ChatGroup) -> some View {
+        ConversationRow(
+            title: model.displayName(for: group), subtitle: "\(group.memberCount) 位成员",
+            unreadCount: model.unreadCount(for: group.id),
+            isSelected: model.selectedGroupID == group.id,
+            settings: model.conversationSettings(for: group.id)
+        ) {
+            GroupAvatar(size: 42)
+        } action: {
+            model.selectGroup(group.id)
+        }
+        .contextMenu {
+            ConversationManagementActions(conversationID: group.id)
+            Divider()
+            Button("群聊设置") { model.openGroupEditor(for: group.id) }
+            Button("删除群聊", role: .destructive) { model.deleteGroup(group.id) }
+        }
     }
 
     private var emptyState: some View {
@@ -288,10 +327,17 @@ struct SidebarView: View {
             Image(systemName: filter == .unread ? "checkmark.bubble" : "bubble.left.and.bubble.right")
                 .font(.system(size: 26, weight: .light))
                 .foregroundStyle(.tertiary)
-            Text(!model.searchText.isEmpty ? "没有匹配的会话" : (filter == .unread ? "暂无未读消息" : "暂无会话"))
+            Text(!model.searchText.isEmpty || model.selectedConversationTag != nil || model.showsBlockedConversationsOnly
+                 ? "没有匹配的会话" : (filter == .unread ? "暂无未读消息" : "暂无会话"))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            if model.searchText.isEmpty && filter != .unread {
+            if model.selectedConversationTag != nil || model.showsBlockedConversationsOnly {
+                Button("清除筛选") {
+                    model.selectedConversationTag = nil
+                    model.showsBlockedConversationsOnly = false
+                }
+                .buttonStyle(.borderless)
+            } else if model.searchText.isEmpty && filter != .unread {
                 Button(filter == .groups ? "创建群聊" : "发现联系人") {
                     if filter == .groups { model.openGroupEditor() }
                     else if model.isRunning { model.refreshDiscovery() }
@@ -311,6 +357,7 @@ private struct ConversationRow<Avatar: View>: View {
     let subtitle: String
     let unreadCount: Int
     let isSelected: Bool
+    let settings: ConversationSettings
     @ViewBuilder let avatar: () -> Avatar
     let action: () -> Void
     @State private var isHovering = false
@@ -326,10 +373,26 @@ private struct ConversationRow<Avatar: View>: View {
                     Text(subtitle)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                    if !settings.tags.isEmpty {
+                        Text(settings.tags.prefix(2).joined(separator: " · ") + (settings.tags.count > 2 ? " +\(settings.tags.count - 2)" : ""))
+                            .font(.system(size: 10)).foregroundStyle(FeiQUI.accent)
+                            .help(settings.tags.joined(separator: "、"))
+                    }
                 }
                 .lineLimit(1)
                 Spacer(minLength: 0)
-                FeiQUnreadBadge(count: unreadCount)
+                VStack(alignment: .trailing, spacing: 7) {
+                    ConversationStatusIcons(settings: settings)
+                    if settings.isMuted && unreadCount > 0 {
+                        Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.12), in: Capsule())
+                            .help("\(unreadCount) 条未读消息（免打扰）")
+                    } else {
+                        FeiQUnreadBadge(count: unreadCount)
+                    }
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 11)

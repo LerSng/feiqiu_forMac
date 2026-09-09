@@ -59,6 +59,31 @@ final class ChatHistoryStore {
     private let legacyURL: URL
     private var database: OpaquePointer?
     private var initializationError: Error?
+    private var restoredDuringThisRun = false
+    private var hasPreparedPeerIdentities = false
+
+    var maintenanceRequiresRestart: Bool {
+        if DispatchQueue.getSpecific(key: queueKey) != nil { return restoredDuringThisRun }
+        return queue.sync { restoredDuringThisRun }
+    }
+
+    func withMaintenanceDatabase<Value>(requiresRestart: Bool,
+        operation: @escaping (OpaquePointer, URL) throws -> Value,
+        completion: @escaping (Result<Value, Error>) -> Void
+    ) {
+        queue.async {
+            completion(Result {
+                guard !self.restoredDuringThisRun else { throw DatabaseMaintenanceError.restartRequired }
+                try self.preparePeerIdentities()
+                guard let database = self.database else {
+                    throw self.initializationError ?? DatabaseMaintenanceError.database("数据库未打开")
+                }
+                let value = try operation(database, self.databaseURL)
+                if requiresRestart { self.restoredDuringThisRun = true }
+                return value
+            })
+        }
+    }
 
     var locationDescription: String {
         databaseURL.path
@@ -101,12 +126,61 @@ final class ChatHistoryStore {
         }
     }
 
+    func loadConversationSettings() throws -> [String: ConversationSettings] {
+        let load = { [self] () throws -> [String: ConversationSettings] in
+            try preparePeerIdentities()
+            let statement = try prepare("SELECT conversation_id, settings_json FROM conversation_settings;")
+            defer { sqlite3_finalize(statement) }
+            var settings: [String: ConversationSettings] = [:]
+            while true {
+                let result = sqlite3_step(statement)
+                if result == SQLITE_DONE { return settings }
+                guard result == SQLITE_ROW,
+                      let identifier = sqlite3_column_text(statement, 0),
+                      let json = sqlite3_column_text(statement, 1) else { throw sqliteError() }
+                settings[String(cString: identifier)] = try JSONDecoder()
+                    .decode(ConversationSettings.self, from: Data(String(cString: json).utf8)).validated()
+            }
+        }
+        if DispatchQueue.getSpecific(key: queueKey) != nil { return try load() }
+        return try queue.sync(execute: load)
+    }
+
+    func saveConversationSettings(_ settings: ConversationSettings, for conversationID: String,
+                                  completion: @escaping (Result<Void, Error>) -> Void) {
+        queue.async {
+            completion(Result {
+                guard !conversationID.isEmpty else { throw ConversationSettingsError.unavailable }
+                let normalized = try settings.validated()
+                try self.performTransaction {
+                    let sql = normalized.isDefault
+                        ? "DELETE FROM conversation_settings WHERE conversation_id = ?;"
+                        : "INSERT INTO conversation_settings(conversation_id, settings_json) VALUES (?, ?) ON CONFLICT(conversation_id) DO UPDATE SET settings_json = excluded.settings_json;"
+                    let statement = try self.prepare(sql)
+                    defer { sqlite3_finalize(statement) }
+                    try self.bindText(conversationID, at: 1, in: statement)
+                    if !normalized.isDefault {
+                        let json = String(decoding: try JSONEncoder().encode(normalized), as: UTF8.self)
+                        try self.bindText(json, at: 2, in: statement)
+                    }
+                    try self.stepDone(statement)
+                    if normalized.isBlocked {
+                        let clearUnread = try self.prepare("UPDATE conversations SET unread_count = 0 WHERE peer_id = ?;")
+                        defer { sqlite3_finalize(clearUnread) }
+                        try self.bindText(conversationID, at: 1, in: clearUnread)
+                        try self.stepDone(clearUnread)
+                    }
+                }
+            })
+        }
+    }
+
     func loadSnapshot(
         completion: @escaping (Result<ChatHistorySnapshot, Error>) -> Void
     ) {
         queue.async {
             do {
-                try self.migrateLegacyJSONIfNeeded()
+                try self.preparePeerIdentities()
                 let peers = try self.fetchPeers()
                 let groups = try self.fetchGroups()
                 var unreadCounts = Dictionary(
@@ -348,6 +422,191 @@ final class ChatHistoryStore {
         }
     }
 
+    func loadLaterMessages(
+        for conversationID: String,
+        after message: ChatMessage,
+        limit: Int,
+        completion: @escaping (Result<ChatHistoryPage, Error>) -> Void
+    ) {
+        queue.async {
+            do {
+                completion(.success(try self.fetchMessages(
+                    for: conversationID, before: nil, after: message, limit: limit
+                )))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func loadMessageContext(
+        for conversationID: String,
+        messageID: UUID,
+        limit: Int,
+        completion: @escaping (Result<ChatHistoryContext, Error>) -> Void
+    ) {
+        queue.async {
+            do {
+                let statement = try self.prepare("""
+                    SELECT id, direction, text, sender_name, recipient_name,
+                           attachments_json, created_at
+                    FROM messages WHERE peer_id = ? AND id = ?
+                    """)
+                defer { sqlite3_finalize(statement) }
+                try self.bindText(conversationID, at: 1, in: statement)
+                try self.bindText(messageID.uuidString, at: 2, in: statement)
+                let stepResult = sqlite3_step(statement)
+                guard stepResult == SQLITE_ROW else {
+                    if stepResult == SQLITE_DONE { throw ChatHistorySearchError.messageUnavailable }
+                    throw self.sqliteError()
+                }
+                let target = self.message(from: statement)
+                let sideLimit = max(1, min(limit, 200) / 2)
+                let earlier = try self.fetchMessages(for: conversationID, before: target, limit: sideLimit)
+                let later = try self.fetchMessages(for: conversationID, before: nil, after: target, limit: sideLimit)
+                completion(.success(ChatHistoryContext(
+                    messages: earlier.messages + [target] + later.messages,
+                    hasEarlier: earlier.hasMore, hasLater: later.hasMore
+                )))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func loadArchive(
+        matching query: ChatHistorySearchQuery,
+        completion: @escaping (Result<ChatHistoryArchive, Error>) -> Void
+    ) {
+        queue.async {
+            do {
+                try self.migrateLegacyJSONIfNeeded()
+                var records: [ChatArchivedMessage] = []
+                var cursor: ChatHistorySearchCursor?
+                var exportedPeers: [FeiQPeer] = []
+                var exportedGroups: [ChatGroup] = []
+                try self.performTransaction {
+                    repeat {
+                        let page = try self.fetchSearchResults(matching: query, before: cursor, limit: 200)
+                        records += page.results.map { ChatArchivedMessage(conversationID: $0.conversationID, message: $0.message) }
+                        cursor = page.hasMore ? page.results.last?.cursor : nil
+                    } while cursor != nil
+                    let conversationIDs = Set(records.map(\.conversationID))
+                    exportedGroups = try self.fetchGroups().map(\.group).filter { conversationIDs.contains($0.id) }
+                    let peerIDs = conversationIDs.union(exportedGroups.flatMap(\.memberIDs))
+                    exportedPeers = try self.fetchPeers().map(\.peer).filter { peerIDs.contains($0.id) }
+                }
+                completion(.success(ChatHistoryArchive(
+                    peers: exportedPeers, groups: exportedGroups, messages: Array(records.reversed())
+                )))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func importArchive(
+        _ archive: ChatHistoryArchive,
+        completion: @escaping (Result<ChatHistoryImportSummary, Error>) -> Void
+    ) {
+        queue.async {
+            do {
+                try archive.validate()
+                try self.migrateLegacyJSONIfNeeded()
+                var insertedIDs = Set<UUID>()
+                var skippedCount = 0
+                var addedPeers = 0
+                var addedGroups = 0
+                try self.performTransaction {
+                    for peer in archive.peers {
+                        if let kind = try self.conversationKind(for: peer.id) {
+                            guard kind == "peer" else { throw ChatHistoryArchiveError.conflictingConversation }
+                        } else {
+                            var restored = peer
+                            restored.isOnline = false
+                            try self.upsertPeer(restored)
+                            addedPeers += 1
+                        }
+                    }
+                    for group in archive.groups {
+                        if let kind = try self.conversationKind(for: group.id) {
+                            guard kind == "group" else { throw ChatHistoryArchiveError.conflictingConversation }
+                        } else {
+                            var restored = group
+                            restored.memberIDs = []
+                            try self.upsertGroup(restored)
+                            addedGroups += 1
+                        }
+                    }
+                    for record in archive.messages {
+                        let statement = try self.prepare("SELECT peer_id FROM messages WHERE id = ?")
+                        defer { sqlite3_finalize(statement) }
+                        try self.bindText(record.message.id.uuidString, at: 1, in: statement)
+                        let stepResult = sqlite3_step(statement)
+                        if stepResult == SQLITE_ROW {
+                            guard self.columnText(statement, 0) == record.conversationID else {
+                                throw ChatHistoryArchiveError.conflictingMessage
+                            }
+                            skippedCount += 1
+                        } else {
+                            guard stepResult == SQLITE_DONE else { throw self.sqliteError() }
+                            try self.insertMessage(record.message, conversationID: record.conversationID)
+                            insertedIDs.insert(record.message.id)
+                        }
+                    }
+                }
+                completion(.success(ChatHistoryImportSummary(
+                    insertedMessageIDs: insertedIDs, skippedMessageCount: skippedCount,
+                    addedPeerCount: addedPeers, addedGroupCount: addedGroups
+                )))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    private func conversationKind(for conversationID: String) throws -> String? {
+        let statement = try prepare("SELECT conversation_kind FROM conversations WHERE peer_id = ?")
+        defer { sqlite3_finalize(statement) }
+        try bindText(conversationID, at: 1, in: statement)
+        let stepResult = sqlite3_step(statement)
+        if stepResult == SQLITE_DONE { return nil }
+        guard stepResult == SQLITE_ROW else { throw sqliteError() }
+        return columnText(statement, 0)
+    }
+
+    func searchAttachments(
+        matching query: ChatAttachmentHistoryQuery,
+        before cursor: ChatAttachmentHistoryCursor?,
+        limit: Int,
+        completion: @escaping (Result<ChatAttachmentHistoryPage, Error>) -> Void
+    ) {
+        queue.async {
+            do {
+                try self.migrateLegacyJSONIfNeeded()
+                completion(.success(try self.fetchAttachmentHistory(matching: query, before: cursor, limit: limit)))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func searchMessages(
+        matching query: ChatHistorySearchQuery,
+        before cursor: ChatHistorySearchCursor?,
+        limit: Int,
+        completion: @escaping (Result<ChatHistorySearchPage, Error>) -> Void
+    ) {
+        queue.async {
+            do {
+                try self.migrateLegacyJSONIfNeeded()
+                completion(.success(try self.fetchSearchResults(matching: query, before: cursor, limit: limit)))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
     func loadConversationImages(
         for conversationID: String,
         completion: @escaping (Result<[ChatHistoryImage], Error>) -> Void
@@ -419,6 +678,11 @@ final class ChatHistoryStore {
                     conversation_kind TEXT NOT NULL DEFAULT 'peer'
                 );
 
+                CREATE TABLE IF NOT EXISTS conversation_settings (
+                    conversation_id TEXT PRIMARY KEY NOT NULL,
+                    settings_json TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS chat_groups (
                     group_id TEXT PRIMARY KEY NOT NULL,
                     name TEXT NOT NULL,
@@ -454,6 +718,9 @@ final class ChatHistoryStore {
                 CREATE INDEX IF NOT EXISTS idx_messages_peer_time
                     ON messages(peer_id, created_at DESC, id DESC);
 
+                CREATE INDEX IF NOT EXISTS idx_messages_time
+                    ON messages(created_at DESC, id DESC);
+
                 CREATE TABLE IF NOT EXISTS deleted_message_images (
                     message_id TEXT NOT NULL,
                     attachment_id TEXT NOT NULL,
@@ -469,6 +736,7 @@ final class ChatHistoryStore {
             )
             try ensureConversationKindColumn()
             try ensureMessageAttachmentsColumn()
+            try ensurePeerDeviceIdentifierColumn()
         } catch {
             initializationError = error
             sqlite3_close(database)
@@ -530,6 +798,100 @@ final class ChatHistoryStore {
                 "ALTER TABLE messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'"
             )
         }
+    }
+
+    private func ensurePeerDeviceIdentifierColumn() throws {
+        let statement = try prepare("PRAGMA table_info(conversations)")
+        defer { sqlite3_finalize(statement) }
+        while true {
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { break }
+            guard status == SQLITE_ROW else { throw sqliteError() }
+            if columnText(statement, 1) == "device_identifier" { return }
+        }
+        try execute("ALTER TABLE conversations ADD COLUMN device_identifier TEXT NOT NULL DEFAULT ''")
+    }
+
+    private func preparePeerIdentities() throws {
+        guard !hasPreparedPeerIdentities else { return }
+        try migrateLegacyJSONIfNeeded()
+        let peers = try fetchPeers()
+        let groups = Dictionary(grouping: peers.filter { PeerIdentity.legacyMergeKey(for: $0.peer) != nil }) {
+            PeerIdentity.legacyMergeKey(for: $0.peer)!
+        }.values.filter { $0.count > 1 }
+        try performTransaction {
+            for candidates in groups {
+                var earliest: [String: Double] = [:]
+                var preferences: [String: ConversationSettings] = [:]
+                for candidate in candidates {
+                    let dateStatement = try prepare("SELECT MIN(created_at) FROM messages WHERE peer_id = ?")
+                    defer { sqlite3_finalize(dateStatement) }
+                    try bindText(candidate.peerID, at: 1, in: dateStatement)
+                    guard sqlite3_step(dateStatement) == SQLITE_ROW else { throw sqliteError() }
+                    earliest[candidate.peerID] = sqlite3_column_type(dateStatement, 0) == SQLITE_NULL
+                        ? candidate.peer.lastSeen.timeIntervalSince1970 : sqlite3_column_double(dateStatement, 0)
+                    let settingsStatement = try prepare("SELECT settings_json FROM conversation_settings WHERE conversation_id = ?")
+                    defer { sqlite3_finalize(settingsStatement) }
+                    try bindText(candidate.peerID, at: 1, in: settingsStatement)
+                    let status = sqlite3_step(settingsStatement)
+                    guard status == SQLITE_ROW || status == SQLITE_DONE else { throw sqliteError() }
+                    if status == SQLITE_ROW {
+                        preferences[candidate.peerID] = try JSONDecoder().decode(ConversationSettings.self,
+                            from: Data(columnText(settingsStatement, 0).utf8)).validated()
+                    }
+                }
+                let ordered = candidates.sorted {
+                    let first = earliest[$0.peerID]!, second = earliest[$1.peerID]!
+                    return first == second ? $0.peerID < $1.peerID : first < second
+                }
+                let canonical = ordered[0]
+                let latest = ordered.max { $0.peer.lastSeen < $1.peer.lastSeen }!.peer
+                var mergedSettings = ConversationSettings()
+                var remarks: [String] = []
+                for candidate in ordered {
+                    let settings = preferences[candidate.peerID] ?? ConversationSettings()
+                    mergedSettings.isPinned = mergedSettings.isPinned || settings.isPinned
+                    mergedSettings.isMuted = mergedSettings.isMuted || settings.isMuted
+                    mergedSettings.isBlocked = mergedSettings.isBlocked || settings.isBlocked
+                    mergedSettings.tags += settings.tags
+                    if !settings.remark.isEmpty, !remarks.contains(settings.remark) { remarks.append(settings.remark) }
+                }
+                mergedSettings.remark = remarks.joined(separator: " / ")
+                guard let normalizedSettings = try? mergedSettings.validated() else { continue }
+                let mergedPeer = FeiQPeer(id: canonical.peerID, name: latest.name, hostName: latest.hostName,
+                    ipAddress: latest.ipAddress, group: latest.group, lastSeen: latest.lastSeen,
+                    isOnline: false, deviceIdentifier: latest.deviceIdentifier)
+                try upsertPeer(mergedPeer)
+                for duplicate in ordered.dropFirst() {
+                    for sql in [
+                        "UPDATE messages SET peer_id = ? WHERE peer_id = ?",
+                        "INSERT OR IGNORE INTO chat_group_members(group_id, peer_id, sort_order) SELECT group_id, ?, sort_order FROM chat_group_members WHERE peer_id = ?"
+                    ] {
+                        let statement = try prepare(sql)
+                        defer { sqlite3_finalize(statement) }
+                        try bindText(canonical.peerID, at: 1, in: statement)
+                        try bindText(duplicate.peerID, at: 2, in: statement)
+                        try stepDone(statement)
+                    }
+                    for sql in ["DELETE FROM chat_group_members WHERE peer_id = ?",
+                                "DELETE FROM conversation_settings WHERE conversation_id = ?",
+                                "DELETE FROM conversations WHERE peer_id = ?"] {
+                        let statement = try prepare(sql)
+                        defer { sqlite3_finalize(statement) }
+                        try bindText(duplicate.peerID, at: 1, in: statement)
+                        try stepDone(statement)
+                    }
+                }
+                let settingsStatement = try prepare("INSERT OR REPLACE INTO conversation_settings(conversation_id, settings_json) VALUES (?, ?)")
+                defer { sqlite3_finalize(settingsStatement) }
+                try bindText(canonical.peerID, at: 1, in: settingsStatement)
+                try bindText(String(decoding: JSONEncoder().encode(normalizedSettings), as: UTF8.self), at: 2, in: settingsStatement)
+                try stepDone(settingsStatement)
+                let unread = ordered.reduce(0) { min(Int(Int32.max), $0 + max(0, $1.unreadCount)) }
+                try updateUnreadCount(normalizedSettings.isBlocked ? 0 : unread, for: canonical.peerID)
+            }
+        }
+        hasPreparedPeerIdentities = true
     }
 
     private func migrateLegacyJSONIfNeeded() throws {
@@ -605,7 +967,7 @@ final class ChatHistoryStore {
         let statement = try prepare(
             """
             SELECT peer_id, name, host_name, ip_address, group_name,
-                   last_seen, is_online, unread_count
+                   last_seen, is_online, unread_count, device_identifier
             FROM conversations
             WHERE conversation_kind = 'peer'
             """
@@ -630,7 +992,8 @@ final class ChatHistoryStore {
                 ipAddress: columnText(statement, 3),
                 group: columnText(statement, 4),
                 lastSeen: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5)),
-                isOnline: sqlite3_column_int(statement, 6) != 0
+                isOnline: sqlite3_column_int(statement, 6) != 0,
+                deviceIdentifier: PeerIdentity.deviceIdentifier(columnText(statement, 8))
             )
             result.append(
                 (
@@ -718,12 +1081,14 @@ final class ChatHistoryStore {
     private func fetchMessages(
         for peerID: String,
         before beforeMessage: ChatMessage?,
+        after afterMessage: ChatMessage? = nil,
         limit: Int
     ) throws -> ChatHistoryPage {
         let pageSize = max(1, min(limit, 200))
         let statement: OpaquePointer
 
-        if beforeMessage == nil {
+        let boundary = beforeMessage ?? afterMessage
+        if boundary == nil {
             statement = try prepare(
                 """
                 SELECT id, direction, text, sender_name, recipient_name,
@@ -735,6 +1100,8 @@ final class ChatHistoryStore {
                 """
             )
         } else {
+            let comparison = afterMessage == nil ? "<" : ">"
+            let order = afterMessage == nil ? "DESC" : "ASC"
             statement = try prepare(
                 """
                 SELECT id, direction, text, sender_name, recipient_name,
@@ -742,10 +1109,10 @@ final class ChatHistoryStore {
                 FROM messages
                 WHERE peer_id = ?
                   AND (
-                      created_at < ?
-                      OR (created_at = ? AND id < ?)
+                      created_at \(comparison) ?
+                      OR (created_at = ? AND id \(comparison) ?)
                   )
-                ORDER BY created_at DESC, id DESC
+                ORDER BY created_at \(order), id \(order)
                 LIMIT ?
                 """
             )
@@ -753,10 +1120,10 @@ final class ChatHistoryStore {
         defer { sqlite3_finalize(statement) }
 
         try bindText(peerID, at: 1, in: statement)
-        if let beforeMessage {
-            try bindDouble(beforeMessage.date.timeIntervalSince1970, at: 2, in: statement)
-            try bindDouble(beforeMessage.date.timeIntervalSince1970, at: 3, in: statement)
-            try bindText(beforeMessage.id.uuidString, at: 4, in: statement)
+        if let boundary {
+            try bindDouble(boundary.date.timeIntervalSince1970, at: 2, in: statement)
+            try bindDouble(boundary.date.timeIntervalSince1970, at: 3, in: statement)
+            try bindText(boundary.id.uuidString, at: 4, in: statement)
             try bindInt32(Int32(pageSize + 1), at: 5, in: statement)
         } else {
             try bindInt32(Int32(pageSize + 1), at: 2, in: statement)
@@ -775,9 +1142,209 @@ final class ChatHistoryStore {
         }
 
         let hasMore = rows.count > pageSize
+        let page = Array(rows.prefix(pageSize))
         return ChatHistoryPage(
-            messages: Array(rows.prefix(pageSize).reversed()),
+            messages: afterMessage == nil ? Array(page.reversed()) : page,
             hasMore: hasMore
+        )
+    }
+
+    private func fetchSearchResults(
+        matching query: ChatHistorySearchQuery,
+        before cursor: ChatHistorySearchCursor?,
+        limit: Int
+    ) throws -> ChatHistorySearchPage {
+        let bounds = try query.dateBounds()
+        let pageSize = max(1, min(limit, 200))
+        var conditions: [String] = []
+        if query.conversationID != nil { conditions.append("messages.peer_id = :conversation") }
+        if bounds.start != nil { conditions.append("messages.created_at >= :start") }
+        if bounds.end != nil { conditions.append("messages.created_at < :end") }
+        if cursor != nil {
+            conditions.append("(messages.created_at < :cursorDate OR (messages.created_at = :cursorDate AND messages.id < :cursorID))")
+        }
+
+        let attachments = "json_each(CASE WHEN json_valid(messages.attachments_json) THEN messages.attachments_json ELSE '[]' END) AS attachment"
+        let attachmentKind = query.kind.attachmentKind.map { " AND json_extract(attachment.value, '$.kind') = '\($0.rawValue)'" } ?? ""
+        if query.kind == .text {
+            conditions.append("length(trim(messages.text, char(9) || char(10) || char(13) || ' ')) > 0")
+        } else if query.kind.attachmentKind != nil {
+            conditions.append("EXISTS (SELECT 1 FROM \(attachments) WHERE attachment.type = 'object'\(attachmentKind))")
+        }
+        if !query.keyword.isEmpty {
+            let textMatch = "messages.text LIKE :keyword ESCAPE '\\'"
+            if query.kind == .text {
+                conditions.append(textMatch)
+            } else {
+                conditions.append("""
+                    (\(textMatch) OR EXISTS (
+                        SELECT 1 FROM \(attachments)
+                        WHERE attachment.type = 'object'\(attachmentKind)
+                          AND json_extract(attachment.value, '$.fileName') LIKE :keyword ESCAPE '\\'
+                    ))
+                    """)
+            }
+        }
+        let predicate = conditions.isEmpty ? "1 = 1" : conditions.joined(separator: " AND ")
+        let statement = try prepare("""
+            SELECT messages.id, messages.direction, messages.text, messages.sender_name,
+                   messages.recipient_name, messages.attachments_json, messages.created_at,
+                   conversations.peer_id, conversations.name, conversations.host_name,
+                   conversations.ip_address, conversations.conversation_kind
+            FROM messages JOIN conversations ON conversations.peer_id = messages.peer_id
+            WHERE \(predicate)
+            ORDER BY messages.created_at DESC, messages.id DESC
+            LIMIT :pageSize
+            """)
+        defer { sqlite3_finalize(statement) }
+        if let conversationID = query.conversationID {
+            try bindText(conversationID, at: sqlite3_bind_parameter_index(statement, ":conversation"), in: statement)
+        }
+        if let start = bounds.start {
+            try bindDouble(start.timeIntervalSince1970, at: sqlite3_bind_parameter_index(statement, ":start"), in: statement)
+        }
+        if let end = bounds.end {
+            try bindDouble(end.timeIntervalSince1970, at: sqlite3_bind_parameter_index(statement, ":end"), in: statement)
+        }
+        if let cursor {
+            try bindDouble(cursor.date.timeIntervalSince1970, at: sqlite3_bind_parameter_index(statement, ":cursorDate"), in: statement)
+            try bindText(cursor.messageID.uuidString, at: sqlite3_bind_parameter_index(statement, ":cursorID"), in: statement)
+        }
+        if !query.keyword.isEmpty {
+            let escaped = query.keyword
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "%", with: "\\%")
+                .replacingOccurrences(of: "_", with: "\\_")
+            try bindText("%\(escaped)%", at: sqlite3_bind_parameter_index(statement, ":keyword"), in: statement)
+        }
+        try bindInt32(Int32(pageSize + 1), at: sqlite3_bind_parameter_index(statement, ":pageSize"), in: statement)
+
+        var results: [ChatHistorySearchResult] = []
+        while true {
+            let stepResult = sqlite3_step(statement)
+            if stepResult == SQLITE_DONE { break }
+            guard stepResult == SQLITE_ROW else { throw sqliteError() }
+            let conversationID = columnText(statement, 7)
+            let name = columnText(statement, 8).trimmingCharacters(in: .whitespacesAndNewlines)
+            let host = columnText(statement, 9)
+            let address = columnText(statement, 10)
+            let fallback = host.isEmpty ? (address.isEmpty ? conversationID : address) : host
+            results.append(ChatHistorySearchResult(
+                conversationID: conversationID, conversationName: name.isEmpty ? fallback : name,
+                isGroup: columnText(statement, 11) == "group", message: message(from: statement)
+            ))
+        }
+        return ChatHistorySearchPage(results: Array(results.prefix(pageSize)), hasMore: results.count > pageSize)
+    }
+
+    private func fetchAttachmentHistory(
+        matching query: ChatAttachmentHistoryQuery,
+        before cursor: ChatAttachmentHistoryCursor?,
+        limit: Int
+    ) throws -> ChatAttachmentHistoryPage {
+        let bounds = try query.dateBounds()
+        let pageSize = max(1, min(limit, 200))
+        let attachmentJSON = "CASE WHEN attachment.type = 'object' THEN attachment.value ELSE '{}' END"
+        let remark = "CASE WHEN json_valid(settings.settings_json) THEN json_extract(settings.settings_json, '$.remark') ELSE '' END"
+        var conditions = [
+            "attachment.type = 'object'",
+            "json_extract(\(attachmentJSON), '$.kind') IN ('image', 'file')",
+            "messages.direction IN ('incoming', 'outgoing')"
+        ]
+        if query.conversationID != nil { conditions.append("messages.peer_id = :conversation") }
+        if query.direction != nil { conditions.append("messages.direction = :direction") }
+        if query.kind != nil { conditions.append("json_extract(\(attachmentJSON), '$.kind') = :kind") }
+        if bounds.start != nil { conditions.append("messages.created_at >= :start") }
+        if bounds.end != nil { conditions.append("messages.created_at < :end") }
+        if cursor != nil {
+            conditions.append("""
+                (messages.created_at < :cursorDate OR (messages.created_at = :cursorDate AND
+                    (messages.id < :cursorID OR (messages.id = :cursorID AND attachment.key > :cursorIndex))))
+                """)
+        }
+        if !query.keyword.isEmpty {
+            conditions.append("""
+                (json_extract(\(attachmentJSON), '$.fileName') LIKE :keyword ESCAPE '\\'
+                    OR messages.sender_name LIKE :keyword ESCAPE '\\'
+                    OR conversations.name LIKE :keyword ESCAPE '\\'
+                    OR conversations.host_name LIKE :keyword ESCAPE '\\'
+                    OR conversations.ip_address LIKE :keyword ESCAPE '\\'
+                    OR (\(remark)) LIKE :keyword ESCAPE '\\')
+                """)
+        }
+        let statement = try prepare("""
+            SELECT messages.id, messages.direction, messages.sender_name, messages.created_at,
+                   \(attachmentJSON), attachment.key, conversations.peer_id, conversations.name,
+                   conversations.host_name, conversations.ip_address, conversations.conversation_kind,
+                   \(remark)
+            FROM messages
+            JOIN conversations ON conversations.peer_id = messages.peer_id
+            LEFT JOIN conversation_settings AS settings ON settings.conversation_id = messages.peer_id
+            JOIN json_each(CASE WHEN json_valid(messages.attachments_json) THEN
+                CASE WHEN json_type(messages.attachments_json) = 'array' THEN messages.attachments_json ELSE '[]' END
+                ELSE '[]' END) AS attachment
+            WHERE \(conditions.joined(separator: " AND "))
+            ORDER BY messages.created_at DESC, messages.id DESC, attachment.key ASC
+            LIMIT :pageSize
+            """)
+        defer { sqlite3_finalize(statement) }
+        for (parameter, value) in [
+            (":conversation", query.conversationID), (":direction", query.direction?.rawValue),
+            (":kind", query.kind?.rawValue)
+        ] {
+            if let value { try bindText(value, at: sqlite3_bind_parameter_index(statement, parameter), in: statement) }
+        }
+        if let start = bounds.start {
+            try bindDouble(start.timeIntervalSince1970, at: sqlite3_bind_parameter_index(statement, ":start"), in: statement)
+        }
+        if let end = bounds.end {
+            try bindDouble(end.timeIntervalSince1970, at: sqlite3_bind_parameter_index(statement, ":end"), in: statement)
+        }
+        if let cursor {
+            try bindDouble(cursor.date.timeIntervalSince1970, at: sqlite3_bind_parameter_index(statement, ":cursorDate"), in: statement)
+            try bindText(cursor.messageID.uuidString, at: sqlite3_bind_parameter_index(statement, ":cursorID"), in: statement)
+            try bindInt32(Int32(clamping: cursor.attachmentIndex), at: sqlite3_bind_parameter_index(statement, ":cursorIndex"), in: statement)
+        }
+        if !query.keyword.isEmpty {
+            let escaped = query.keyword
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "%", with: "\\%")
+                .replacingOccurrences(of: "_", with: "\\_")
+            try bindText("%\(escaped)%", at: sqlite3_bind_parameter_index(statement, ":keyword"), in: statement)
+        }
+        try bindInt32(Int32(pageSize + 1), at: sqlite3_bind_parameter_index(statement, ":pageSize"), in: statement)
+        let decoder = JSONDecoder()
+        var rows: [(cursor: ChatAttachmentHistoryCursor, result: ChatAttachmentHistoryResult?)] = []
+        while true {
+            let stepResult = sqlite3_step(statement)
+            if stepResult == SQLITE_DONE { break }
+            guard stepResult == SQLITE_ROW else { throw sqliteError() }
+            guard let messageID = UUID(uuidString: columnText(statement, 0)) else { continue }
+            let date = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
+            let index = Int(sqlite3_column_int64(statement, 5))
+            let rowCursor = ChatAttachmentHistoryCursor(date: date, messageID: messageID, attachmentIndex: index)
+            var result: ChatAttachmentHistoryResult?
+            if let direction = ChatMessageDirection(rawValue: columnText(statement, 1)),
+               let attachment = try? decoder.decode(ChatAttachment.self, from: Data(columnText(statement, 4).utf8)) {
+                let conversationID = columnText(statement, 6)
+                let name = columnText(statement, 7).trimmingCharacters(in: .whitespacesAndNewlines)
+                let host = columnText(statement, 8)
+                let address = columnText(statement, 9)
+                let fallback = host.isEmpty ? (address.isEmpty ? conversationID : address) : host
+                let localRemark = columnText(statement, 11).trimmingCharacters(in: .whitespacesAndNewlines)
+                result = ChatAttachmentHistoryResult(
+                    conversationID: conversationID,
+                    conversationName: localRemark.isEmpty ? (name.isEmpty ? fallback : name) : localRemark,
+                    isGroup: columnText(statement, 10) == "group", messageID: messageID,
+                    attachment: attachment, attachmentIndex: index, date: date,
+                    senderName: columnText(statement, 2), direction: direction
+                )
+            }
+            rows.append((rowCursor, result))
+        }
+        let page = rows.prefix(pageSize)
+        return ChatAttachmentHistoryPage(
+            results: page.compactMap(\.result), hasMore: rows.count > pageSize, nextCursor: page.last?.cursor
         )
     }
 
@@ -879,9 +1446,9 @@ final class ChatHistoryStore {
             """
             INSERT INTO conversations (
                 peer_id, name, host_name, ip_address, group_name,
-                last_seen, is_online, unread_count, conversation_kind
+                last_seen, is_online, unread_count, conversation_kind, device_identifier
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'peer')
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'peer', ?)
             ON CONFLICT(peer_id) DO UPDATE SET
                 name = excluded.name,
                 host_name = excluded.host_name,
@@ -889,7 +1456,9 @@ final class ChatHistoryStore {
                 group_name = excluded.group_name,
                 last_seen = excluded.last_seen,
                 is_online = excluded.is_online,
-                conversation_kind = 'peer'
+                conversation_kind = 'peer',
+                device_identifier = CASE WHEN excluded.device_identifier <> '' THEN excluded.device_identifier ELSE conversations.device_identifier END
+            WHERE excluded.last_seen >= conversations.last_seen
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -901,6 +1470,7 @@ final class ChatHistoryStore {
         try bindText(peer.group, at: 5, in: statement)
         try bindDouble(peer.lastSeen.timeIntervalSince1970, at: 6, in: statement)
         try bindInt32(peer.isOnline ? 1 : 0, at: 7, in: statement)
+        try bindText(PeerIdentity.deviceIdentifier(peer.deviceIdentifier) ?? "", at: 8, in: statement)
         try stepDone(statement)
     }
 
@@ -1126,6 +1696,7 @@ final class ChatHistoryStore {
     }
 
     private func prepare(_ sql: String) throws -> OpaquePointer {
+        guard !restoredDuringThisRun else { throw DatabaseMaintenanceError.restartRequired }
         guard let database else {
             throw initializationError
                 ?? ChatHistoryStoreError.databaseUnavailable("聊天记录数据库未打开")
@@ -1149,6 +1720,7 @@ final class ChatHistoryStore {
     }
 
     private func execute(_ sql: String) throws {
+        guard !restoredDuringThisRun else { throw DatabaseMaintenanceError.restartRequired }
         guard let database else {
             throw initializationError
                 ?? ChatHistoryStoreError.databaseUnavailable("聊天记录数据库未打开")

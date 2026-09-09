@@ -15,7 +15,7 @@ sources=(
 )
 flags=(-swift-version 5 -parse-as-library -target "$(uname -m)-apple-macosx14.0" -module-cache-path "$build_root/modules")
 
-for check in ImagePreviewChecks IncomingImageRepositoryChecks InlineImageProtocolChecks; do
+for check in WindowsInlineImageChecks ImagePreviewChecks IncomingImageRepositoryChecks InlineImageProtocolChecks; do
     echo "Running $check"
     xcrun swiftc "${flags[@]}" "${sources[@]}" \
         "$project_root/FeiQMac/ViewModels/ConversationImagePreviewModel.swift" \

@@ -22,7 +22,8 @@ struct FeiQMacApp: App {
             attachmentRepository: DefaultAttachmentRepository(storageService: attachmentStorageService),
             groupRepository: DefaultGroupRepository(historyService: historyService),
             sessionRepository: DefaultSessionRepository(historyService: historyService),
-            notificationRepository: DefaultNotificationRepository(notificationService: notificationService)
+            notificationRepository: DefaultNotificationRepository(notificationService: notificationService),
+            conversationSettingsRepository: DefaultConversationSettingsRepository(historyService: historyService)
         )
         let settingsRepository = DefaultAppSettingsRepository(
             service: UserDefaultsAppSettingsService()

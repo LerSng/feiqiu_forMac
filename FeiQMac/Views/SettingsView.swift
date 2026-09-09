@@ -15,10 +15,10 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 FeiQIconBadge(systemImage: "person.crop.circle.badge.checkmark")
-                Text("本机资料")
+                Text("设置")
                     .font(.title2.weight(.bold))
             }
-            Text("这些字段会放入飞秋的上线广播中。")
+            Text("本机资料用于上线广播，提示音和界面偏好仅保存在本机。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.top, 5)
@@ -48,6 +48,24 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Section("消息提醒") {
+                    Picker("消息接收提示音", selection: $model.messageNotificationSound) {
+                        ForEach(MessageNotificationSound.allCases) { sound in
+                            Text(sound.title).tag(sound)
+                        }
+                    }
+                    HStack {
+                        Text("保存后生效，静音仅关闭声音，不影响消息与横幅。")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button("试听", systemImage: "speaker.wave.2") { model.previewNotificationSound() }
+                            .disabled(model.messageNotificationSound == .none)
+                    }
+                    Text("遵循会话免打扰 / 屏蔽和 macOS 通知、专注模式设置；当前正在查看的会话不额外响铃。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .formStyle(.grouped)
             .hiddenScrollIndicators()
@@ -74,8 +92,7 @@ struct SettingsView: View {
                     dismiss()
                 }
                 Button {
-                    model.saveSettings()
-                    dismiss()
+                    if model.saveSettings() { dismiss() }
                 } label: {
                     Label("保存并广播", systemImage: "checkmark")
                 }
@@ -85,7 +102,20 @@ struct SettingsView: View {
         }
         .padding(24)
         .background(FeiQUI.chatBackground)
-        .frame(width: 450, height: 540)
+        .frame(width: 490, height: 680)
+        .onChange(of: model.messageNotificationSound) { _, _ in model.stopNotificationSoundPreview() }
+        .onDisappear {
+            model.stopNotificationSoundPreview()
+            model.reloadNotificationSoundSetting()
+        }
+        .alert("消息提示音", isPresented: Binding(
+            get: { model.settingsError != nil },
+            set: { if !$0 { model.settingsError = nil } }
+        )) {
+            Button("好", role: .cancel) { model.settingsError = nil }
+        } message: {
+            Text(model.settingsError ?? "")
+        }
     }
 }
 

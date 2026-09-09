@@ -1,6 +1,14 @@
 import AppKit
 import SwiftUI
 
+private enum DownloadCenterSection: String, CaseIterable, Identifiable {
+    case incoming = "接收任务"
+    case history = "历史附件"
+    case all = "全部传输"
+
+    var id: Self { self }
+}
+
 private enum TransferFilter: String, CaseIterable, Identifiable {
     case all = "全部"
     case active = "进行中"
@@ -24,18 +32,24 @@ private enum TransferFilter: String, CaseIterable, Identifiable {
 struct FileTransferCenterView: View {
     @EnvironmentObject private var model: ChatViewModel
     @Environment(\.dismiss) private var dismiss
+    @State private var section: DownloadCenterSection = .incoming
     @State private var filter: TransferFilter = .all
     @State private var direction: FileTransferDirection?
     @State private var searchText = ""
     @State private var showingCancelConfirmation = false
 
     private var snapshot: FileTransferSnapshot { model.fileTransferSnapshot }
+    private var scopedDirection: FileTransferDirection? { section == .incoming ? .incoming : direction }
+    private var scopeTitle: String { scopedDirection?.rawValue ?? "全部" }
+
+    private var scopedTransfers: [FileTransferRecord] {
+        snapshot.transfers.filter { scopedDirection == nil || $0.direction == scopedDirection }
+    }
 
     private var visibleTransfers: [FileTransferRecord] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return snapshot.transfers.enumerated().filter { _, transfer in
+        return scopedTransfers.enumerated().filter { _, transfer in
             filter.includes(transfer)
-                && (direction == nil || transfer.direction == direction)
                 && (query.isEmpty || transfer.attachment.fileName.localizedCaseInsensitiveContains(query)
                     || transfer.peerName.localizedCaseInsensitiveContains(query)
                     || transfer.ipAddress.localizedCaseInsensitiveContains(query))
@@ -51,31 +65,25 @@ struct FileTransferCenterView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            controls
-            Divider()
-            if visibleTransfers.isEmpty {
-                ContentUnavailableView(
-                    snapshot.transfers.isEmpty ? "暂无文件传输" : "没有匹配的任务",
-                    systemImage: "arrow.up.arrow.down.circle",
-                    description: Text(snapshot.transfers.isEmpty
-                        ? "发送或接收文件后，进度和队列会显示在这里。"
-                        : "试试其他筛选条件或搜索关键词。")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Picker("下载中心内容", selection: $section) {
+                ForEach(DownloadCenterSection.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
+            if section == .history {
+                AttachmentHistoryView(historyModel: model.attachmentHistory)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(visibleTransfers) { transfer in
-                            FileTransferRow(transfer: transfer)
-                        }
-                    }
-                    .padding(20)
-                }
-                .hiddenScrollIndicators()
+                controls
+                Divider()
+                transferList
             }
             Divider()
             HStack(spacing: 12) {
-                Text("记录保留至退出应用；重试从头传输，不删除原文件。")
+                Text(section == .history
+                     ? "历史附件来自本机聊天记录；清除传输任务不会删除历史附件。"
+                     : "任务记录仅保留至退出应用；已保存的附件可在「历史附件」中查询。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -85,25 +93,54 @@ struct FileTransferCenterView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
         }
-        .frame(minWidth: 780, idealWidth: 840, minHeight: 570, idealHeight: 660)
+        .frame(minWidth: 900, idealWidth: 980, minHeight: 640, idealHeight: 740)
         .background(FeiQUI.windowBackground)
         .tint(FeiQUI.accent)
-        .confirmationDialog("取消全部未完成传输？", isPresented: $showingCancelConfirmation) {
-            Button("取消全部传输", role: .destructive) { model.cancelAllFileTransfers() }
+        .onDisappear { model.cancelHistoryNavigation() }
+        .confirmationDialog("取消\(scopeTitle)未完成传输？", isPresented: $showingCancelConfirmation) {
+            Button("取消\(scopeTitle)传输", role: .destructive) {
+                model.cancelAllFileTransfers(direction: scopedDirection)
+            }
             Button("返回", role: .cancel) {}
         } message: {
-            Text("正在传输的连接会中断，排队任务会取消。已完成文件和发送原文件不受影响，取消后可重新加入队列。")
+            Text("仅处理\(scopeTitle)方向，不受关键词和状态筛选影响。正在传输的连接会中断，排队任务会取消；原文件与已完成文件不受影响。")
+        }
+    }
+
+    @ViewBuilder
+    private var transferList: some View {
+        if visibleTransfers.isEmpty {
+            ContentUnavailableView(
+                scopedTransfers.isEmpty ? (section == .incoming ? "暂无接收任务" : "暂无文件传输") : "没有匹配的任务",
+                systemImage: section == .incoming ? "tray.and.arrow.down" : "arrow.up.arrow.down.circle",
+                description: Text(scopedTransfers.isEmpty
+                    ? "当前运行期间的传输任务显示在这里，以往保存的文件和图片请查看「历史附件」。"
+                    : "试试其他筛选条件或搜索关键词。")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(visibleTransfers) { transfer in
+                        FileTransferRow(transfer: transfer)
+                    }
+                }
+                .padding(20)
+            }
+            .hiddenScrollIndicators()
         }
     }
 
     private var header: some View {
         HStack(spacing: 14) {
-            Image(systemName: "arrow.up.arrow.down.square.fill")
+            Image(systemName: "tray.and.arrow.down.fill")
                 .font(.system(size: 34))
                 .foregroundStyle(FeiQUI.accent)
             VStack(alignment: .leading, spacing: 5) {
-                Text("文件传输中心").font(.system(size: 21, weight: .semibold))
-                Text("\(snapshot.activeCount) 个进行中 · \(snapshot.queuedCount) 个排队 · \(snapshot.failedCount) 个失败")
+                Text("下载中心").font(.system(size: 21, weight: .semibold))
+                Text(section == .history
+                     ? "集中查询所有会话的文件与图片，包括重启前保存的附件"
+                     : "\(scopedTransfers.filter { $0.state.isActive }.count) 个进行中 · \(scopedTransfers.filter { $0.state == .queued }.count) 个排队 · \(scopedTransfers.filter { $0.state == .failed }.count) 个失败")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -123,25 +160,28 @@ struct FileTransferCenterView: View {
                 Button {
                     model.setFileTransferQueuePaused(!snapshot.isPaused)
                 } label: {
-                    Label(snapshot.isPaused ? "继续队列" : "暂停队列",
+                    Label(snapshot.isPaused ? "继续全部队列" : "暂停全部队列",
                           systemImage: snapshot.isPaused ? "play.fill" : "pause.fill")
                 }
-                .help("只暂停排队任务的启动，不中断正在传输的文件")
-                Button("重试全部失败", systemImage: "arrow.clockwise") {
-                    model.retryFailedFileTransfers()
+                .help("同时控制发送和接收队列；只暂停排队任务的启动，不中断正在传输的文件")
+                Button("重试\(scopeTitle)失败", systemImage: "arrow.clockwise") {
+                    model.retryFailedFileTransfers(direction: scopedDirection)
                 }
-                .disabled(snapshot.failedCount == 0)
+                .disabled(!scopedTransfers.contains { $0.state == .failed })
                 Menu {
-                    Button("取消全部未完成…", role: .destructive) {
+                    Button("取消\(scopeTitle)未完成…", role: .destructive) {
                         showingCancelConfirmation = true
                     }
-                    .disabled(snapshot.unfinishedCount == 0)
-                    Button("清除已完成和已取消记录") { model.clearFinishedFileTransfers() }
-                        .disabled(!snapshot.transfers.contains { $0.state == .completed || $0.state == .cancelled })
+                    .disabled(!scopedTransfers.contains { $0.state.canCancel })
+                    Button("清除\(scopeTitle)已完成和已取消记录") {
+                        model.clearFinishedFileTransfers(direction: scopedDirection)
+                    }
+                    .disabled(!scopedTransfers.contains { $0.state == .completed || $0.state == .cancelled })
                 } label: {
                     Label("批量管理", systemImage: "ellipsis.circle")
                 }
                 .fixedSize()
+                .help("批量操作仅针对\(scopeTitle)方向，不受关键词和状态筛选影响")
                 Spacer()
                 Picker("每方向并发", selection: Binding(
                     get: { snapshot.maximumConcurrentTransfers },
@@ -161,13 +201,15 @@ struct FileTransferCenterView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(maxWidth: 360)
-                Picker("传输方向", selection: $direction) {
-                    Text("全部方向").tag(Optional<FileTransferDirection>.none)
-                    Text("接收").tag(Optional(FileTransferDirection.incoming))
-                    Text("发送").tag(Optional(FileTransferDirection.outgoing))
+                if section == .all {
+                    Picker("传输方向", selection: $direction) {
+                        Text("全部方向").tag(Optional<FileTransferDirection>.none)
+                        Text("接收").tag(Optional(FileTransferDirection.incoming))
+                        Text("发送").tag(Optional(FileTransferDirection.outgoing))
+                    }
+                    .labelsHidden()
+                    .frame(width: 96)
                 }
-                .labelsHidden()
-                .frame(width: 96)
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField("文件、联系人或 IP", text: $searchText)
@@ -194,6 +236,11 @@ private struct FileTransferRow: View {
     @EnvironmentObject private var model: ChatViewModel
     let transfer: FileTransferRecord
     @State private var showingDetails = false
+    @State private var previewAttachment: ChatAttachment?
+
+    private var canPreview: Bool {
+        transfer.attachment.isAvailable && (transfer.direction == .outgoing || transfer.state == .completed)
+    }
 
     private var queued: [FileTransferRecord] {
         model.fileTransferSnapshot.transfers.filter {
@@ -222,11 +269,19 @@ private struct FileTransferRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: transfer.attachment.systemImageName)
-                    .font(.system(size: 22))
-                    .foregroundStyle(FeiQUI.accent)
-                    .frame(width: 42, height: 46)
-                    .background(FeiQUI.accentSoft, in: RoundedRectangle(cornerRadius: 9))
+                if transfer.attachment.isImage, transfer.direction == .outgoing || transfer.state == .completed {
+                    Button { previewAttachment = transfer.attachment } label: {
+                        HistoryImageThumbnailView(attachment: transfer.attachment, width: 76, height: 56)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canPreview)
+                } else {
+                    Image(systemName: transfer.attachment.systemImageName)
+                        .font(.system(size: 22))
+                        .foregroundStyle(FeiQUI.accent)
+                        .frame(width: 42, height: 46)
+                        .background(FeiQUI.accentSoft, in: RoundedRectangle(cornerRadius: 9))
+                }
                 VStack(alignment: .leading, spacing: 5) {
                     Text(transfer.attachment.fileName)
                         .font(.system(size: 13, weight: .semibold))
@@ -285,6 +340,13 @@ private struct FileTransferRow: View {
         .padding(14)
         .background(FeiQUI.cardBackground, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(FeiQUI.separator))
+        .sheet(item: $previewAttachment) { attachment in
+            if attachment.isImage {
+                ImagePreviewView(attachment: attachment)
+            } else {
+                FilePreviewView(attachment: attachment)
+            }
+        }
     }
 
     private var actions: some View {
@@ -305,6 +367,8 @@ private struct FileTransferRow: View {
                 .disabled(!transfer.attachment.isAvailable)
             }
             Menu {
+                Button("预览附件", systemImage: "eye") { previewAttachment = transfer.attachment }
+                    .disabled(!canPreview)
                 if let queueIndex {
                     Button("移到队首", systemImage: "arrow.up.to.line") { model.prioritizeFileTransfer(transfer.id) }
                         .disabled(queueIndex == 0)

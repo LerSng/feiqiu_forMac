@@ -146,9 +146,7 @@ enum InlineImageProtocolChecks {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("feiq-image-check-" + UUID().uuidString)
         let storage = LocalChatAttachmentStorageService(rootURL: root)
         defer { try? FileManager.default.removeItem(at: root) }
-        let bitmap: ChatAttachment
-        do { bitmap = try storage.saveInlineImage(dib, imageID: "e8fdb8e6", isBitmap: true) }
-        catch { print("DIB storage failed: \(error)"); return }
+        let bitmap = try storage.saveInlineImage(dib, imageID: "e8fdb8e6", isBitmap: true)
         let jpeg = try Data(contentsOf: bitmap.localURL)
         let misflaggedJPEG = try storage.saveInlineImage(jpeg, imageID: "aabbccdd", isBitmap: true)
         check(misflaggedJPEG.isAvailable, "JPEG with bitmap flag still decodes")
@@ -158,9 +156,7 @@ enum InlineImageProtocolChecks {
         let source = CGImageSourceCreateWithData(jpeg as CFData, nil)!
         let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil)!
         check(decoded.width == 1 && decoded.height == 1, "DIB dimensions")
-        let imported: ChatAttachment
-        do { imported = try storage.prepareOutgoingImage(from: jpeg, suggestedFileName: "clipboard.png") }
-        catch { print("JPEG import failed: \(error)"); return }
+        let imported = try storage.prepareOutgoingImage(from: jpeg, suggestedFileName: "clipboard.png")
         check(imported.mimeType == "image/jpeg" && imported.isAvailable, "outgoing image persists")
         let incoming = try storage.saveInlineImage(jpeg, imageID: "c5df6ae0", isBitmap: false)
         check(incoming.isAvailable, "incoming JPEG persists")

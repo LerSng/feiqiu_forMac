@@ -7,6 +7,33 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		FD0000000000000000000001 /* MessageNotificationSound.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD0000000000000000000002 /* MessageNotificationSound.swift */; };
+		FD0000000000000000000003 /* NotificationSoundService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD0000000000000000000004 /* NotificationSoundService.swift */; };
+		FB0000000000000000000001 /* DatabaseMaintenance.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000002 /* DatabaseMaintenance.swift */; };
+		FB0000000000000000000003 /* MaintenanceFileAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000004 /* MaintenanceFileAccess.swift */; };
+		FB0000000000000000000005 /* MaintenanceDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000006 /* MaintenanceDatabase.swift */; };
+		FB0000000000000000000007 /* DatabaseMaintenanceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000008 /* DatabaseMaintenanceService.swift */; };
+		FB0000000000000000000009 /* DatabaseBackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB000000000000000000000A /* DatabaseBackupService.swift */; };
+		FB000000000000000000000B /* DatabaseMaintenanceViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB000000000000000000000C /* DatabaseMaintenanceViewModel.swift */; };
+		FB000000000000000000000D /* DatabaseMaintenanceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB000000000000000000000E /* DatabaseMaintenanceView.swift */; };
+		FC0000000000000000000001 /* PeerIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC0000000000000000000002 /* PeerIdentity.swift */; };
+		FA0000000000000000000001 /* FeiQInlineImageDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA0000000000000000000002 /* FeiQInlineImageDecoder.swift */; };
+		F90000000000000000000001 /* ChatAttachmentHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90000000000000000000002 /* ChatAttachmentHistory.swift */; };
+		F90000000000000000000003 /* AttachmentHistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90000000000000000000004 /* AttachmentHistoryViewModel.swift */; };
+		F90000000000000000000005 /* AttachmentHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90000000000000000000006 /* AttachmentHistoryView.swift */; };
+		F80000000000000000000001 /* ConversationSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = F80000000000000000000002 /* ConversationSettings.swift */; };
+		F80000000000000000000003 /* ConversationSettingsRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = F80000000000000000000004 /* ConversationSettingsRepository.swift */; };
+		F80000000000000000000005 /* ConversationSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F80000000000000000000006 /* ConversationSettingsView.swift */; };
+		F70000000000000000000001 /* DroppedAttachmentService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F70000000000000000000002 /* DroppedAttachmentService.swift */; };
+		F50000000000000000000001 /* ChatHistoryArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50000000000000000000002 /* ChatHistoryArchive.swift */; };
+		F50000000000000000000003 /* ChatArchiveCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50000000000000000000004 /* ChatArchiveCodec.swift */; };
+		F50000000000000000000005 /* ChatArchiveRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50000000000000000000006 /* ChatArchiveRepository.swift */; };
+		F50000000000000000000007 /* HistoryArchiveViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50000000000000000000008 /* HistoryArchiveViewModel.swift */; };
+		F50000000000000000000009 /* HistoryArchiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5000000000000000000000A /* HistoryArchiveView.swift */; };
+		F60000000000000000000001 /* ChatImageThumbnailService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F60000000000000000000002 /* ChatImageThumbnailService.swift */; };
+		F40000000000000000000001 /* ChatHistorySearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40000000000000000000002 /* ChatHistorySearch.swift */; };
+		F40000000000000000000003 /* HistorySearchViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40000000000000000000004 /* HistorySearchViewModel.swift */; };
+		F40000000000000000000005 /* HistorySearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40000000000000000000006 /* HistorySearchView.swift */; };
 		F30000000000000000000001 /* ConversationImagePreviewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30000000000000000000002 /* ConversationImagePreviewModel.swift */; };
 		F20000000000000000000001 /* FileTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000002 /* FileTransfer.swift */; };
 		F20000000000000000000003 /* FileTransferCancellation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000004 /* FileTransferCancellation.swift */; };
@@ -57,6 +84,33 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		FD0000000000000000000002 /* MessageNotificationSound.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageNotificationSound.swift; sourceTree = "<group>"; };
+		FD0000000000000000000004 /* NotificationSoundService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSoundService.swift; sourceTree = "<group>"; };
+		FB0000000000000000000002 /* DatabaseMaintenance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseMaintenance.swift; sourceTree = "<group>"; };
+		FB0000000000000000000004 /* MaintenanceFileAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaintenanceFileAccess.swift; sourceTree = "<group>"; };
+		FB0000000000000000000006 /* MaintenanceDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaintenanceDatabase.swift; sourceTree = "<group>"; };
+		FB0000000000000000000008 /* DatabaseMaintenanceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseMaintenanceService.swift; sourceTree = "<group>"; };
+		FB000000000000000000000A /* DatabaseBackupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseBackupService.swift; sourceTree = "<group>"; };
+		FB000000000000000000000C /* DatabaseMaintenanceViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseMaintenanceViewModel.swift; sourceTree = "<group>"; };
+		FB000000000000000000000E /* DatabaseMaintenanceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseMaintenanceView.swift; sourceTree = "<group>"; };
+		FC0000000000000000000002 /* PeerIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerIdentity.swift; sourceTree = "<group>"; };
+		FA0000000000000000000002 /* FeiQInlineImageDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeiQInlineImageDecoder.swift; sourceTree = "<group>"; };
+		F90000000000000000000002 /* ChatAttachmentHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatAttachmentHistory.swift; sourceTree = "<group>"; };
+		F90000000000000000000004 /* AttachmentHistoryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentHistoryViewModel.swift; sourceTree = "<group>"; };
+		F90000000000000000000006 /* AttachmentHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentHistoryView.swift; sourceTree = "<group>"; };
+		F80000000000000000000002 /* ConversationSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSettings.swift; sourceTree = "<group>"; };
+		F80000000000000000000004 /* ConversationSettingsRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSettingsRepository.swift; sourceTree = "<group>"; };
+		F80000000000000000000006 /* ConversationSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSettingsView.swift; sourceTree = "<group>"; };
+		F70000000000000000000002 /* DroppedAttachmentService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DroppedAttachmentService.swift; sourceTree = "<group>"; };
+		F50000000000000000000002 /* ChatHistoryArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHistoryArchive.swift; sourceTree = "<group>"; };
+		F50000000000000000000004 /* ChatArchiveCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatArchiveCodec.swift; sourceTree = "<group>"; };
+		F50000000000000000000006 /* ChatArchiveRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatArchiveRepository.swift; sourceTree = "<group>"; };
+		F50000000000000000000008 /* HistoryArchiveViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryArchiveViewModel.swift; sourceTree = "<group>"; };
+		F5000000000000000000000A /* HistoryArchiveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryArchiveView.swift; sourceTree = "<group>"; };
+		F60000000000000000000002 /* ChatImageThumbnailService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatImageThumbnailService.swift; sourceTree = "<group>"; };
+		F40000000000000000000002 /* ChatHistorySearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHistorySearch.swift; sourceTree = "<group>"; };
+		F40000000000000000000004 /* HistorySearchViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistorySearchViewModel.swift; sourceTree = "<group>"; };
+		F40000000000000000000006 /* HistorySearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistorySearchView.swift; sourceTree = "<group>"; };
 		F30000000000000000000002 /* ConversationImagePreviewModel.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ConversationImagePreviewModel.swift; sourceTree = "<group>"; };
 		F20000000000000000000002 /* FileTransfer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FileTransfer.swift; sourceTree = "<group>"; };
 		F20000000000000000000004 /* FileTransferCancellation.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FileTransferCancellation.swift; sourceTree = "<group>"; };
@@ -166,9 +220,16 @@
 		A10000000000000000000005 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				FD0000000000000000000002 /* MessageNotificationSound.swift */,
+				FB0000000000000000000002 /* DatabaseMaintenance.swift */,
+				FC0000000000000000000002 /* PeerIdentity.swift */,
 				A10000000000000000000070 /* ChatDomainModels.swift */,
+				F80000000000000000000002 /* ConversationSettings.swift */,
+				F90000000000000000000002 /* ChatAttachmentHistory.swift */,
 				F20000000000000000000002 /* FileTransfer.swift */,
 				A10000000000000000000033 /* ChatMessage.swift */,
+				F40000000000000000000002 /* ChatHistorySearch.swift */,
+				F50000000000000000000002 /* ChatHistoryArchive.swift */,
 				A10000000000000000000034 /* FeiQPeer.swift */,
 			);
 			path = Models;
@@ -198,7 +259,11 @@
 		A10000000000000000000008 /* ViewModels */ = {
 			isa = PBXGroup;
 			children = (
+				FB000000000000000000000C /* DatabaseMaintenanceViewModel.swift */,
 				A10000000000000000000032 /* ChatViewModel.swift */,
+				F40000000000000000000004 /* HistorySearchViewModel.swift */,
+				F90000000000000000000004 /* AttachmentHistoryViewModel.swift */,
+				F50000000000000000000008 /* HistoryArchiveViewModel.swift */,
 				F30000000000000000000002 /* ConversationImagePreviewModel.swift */,
 			);
 			path = ViewModels;
@@ -207,7 +272,12 @@
 		A10000000000000000000009 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				FB000000000000000000000E /* DatabaseMaintenanceView.swift */,
 				A10000000000000000000031 /* ContentView.swift */,
+				F80000000000000000000006 /* ConversationSettingsView.swift */,
+				F90000000000000000000006 /* AttachmentHistoryView.swift */,
+				F40000000000000000000006 /* HistorySearchView.swift */,
+				F5000000000000000000000A /* HistoryArchiveView.swift */,
 				A10000000000000000000076 /* UIStyle.swift */,
 				A10000000000000000000077 /* SidebarView.swift */,
 				A10000000000000000000078 /* AvatarViews.swift */,
@@ -248,8 +318,10 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000071 /* ChatRepository.swift */,
+				F80000000000000000000004 /* ConversationSettingsRepository.swift */,
 				A10000000000000000000072 /* AppSettingsRepository.swift */,
 				E10000000000000000000002 /* MessageRepository.swift */,
+				F50000000000000000000006 /* ChatArchiveRepository.swift */,
 				E10000000000000000000004 /* AttachmentRepository.swift */,
 				E10000000000000000000006 /* GroupRepository.swift */,
 				E10000000000000000000008 /* SessionRepository.swift */,
@@ -261,10 +333,19 @@
 		A1000000000000000000000D /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				FD0000000000000000000004 /* NotificationSoundService.swift */,
+				FB0000000000000000000004 /* MaintenanceFileAccess.swift */,
+				FB0000000000000000000006 /* MaintenanceDatabase.swift */,
+				FB0000000000000000000008 /* DatabaseMaintenanceService.swift */,
+				FB000000000000000000000A /* DatabaseBackupService.swift */,
 				A10000000000000000000073 /* ChatHistoryService.swift */,
+				F50000000000000000000004 /* ChatArchiveCodec.swift */,
+				F60000000000000000000002 /* ChatImageThumbnailService.swift */,
+				F70000000000000000000002 /* DroppedAttachmentService.swift */,
 				A10000000000000000000074 /* FeiQNotificationService.swift */,
 				A10000000000000000000075 /* UserDefaultsSettingsService.swift */,
 				A1000000000000000000007E /* ChatAttachmentStorageService.swift */,
+				FA0000000000000000000002 /* FeiQInlineImageDecoder.swift */,
 				D20000000000000000000002 /* ScreenshotCaptureService.swift */,
 				F20000000000000000000008 /* FileTransferCenter.swift */,
 			);
@@ -362,6 +443,16 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FD0000000000000000000001 /* MessageNotificationSound.swift in Sources */,
+				FD0000000000000000000003 /* NotificationSoundService.swift in Sources */,
+				FB0000000000000000000001 /* DatabaseMaintenance.swift in Sources */,
+				FB0000000000000000000003 /* MaintenanceFileAccess.swift in Sources */,
+				FB0000000000000000000005 /* MaintenanceDatabase.swift in Sources */,
+				FB0000000000000000000007 /* DatabaseMaintenanceService.swift in Sources */,
+				FB0000000000000000000009 /* DatabaseBackupService.swift in Sources */,
+				FB000000000000000000000B /* DatabaseMaintenanceViewModel.swift in Sources */,
+				FB000000000000000000000D /* DatabaseMaintenanceView.swift in Sources */,
+				FC0000000000000000000001 /* PeerIdentity.swift in Sources */,
 				F20000000000000000000001 /* FileTransfer.swift in Sources */,
 				F20000000000000000000003 /* FileTransferCancellation.swift in Sources */,
 				F20000000000000000000005 /* FileTransferIO.swift in Sources */,
@@ -372,6 +463,14 @@
 				A10000000000000000000021 /* ContentView.swift in Sources */,
 				A10000000000000000000022 /* ChatViewModel.swift in Sources */,
 				A10000000000000000000023 /* ChatMessage.swift in Sources */,
+				F40000000000000000000001 /* ChatHistorySearch.swift in Sources */,
+				F50000000000000000000001 /* ChatHistoryArchive.swift in Sources */,
+				F50000000000000000000003 /* ChatArchiveCodec.swift in Sources */,
+				F50000000000000000000005 /* ChatArchiveRepository.swift in Sources */,
+				F50000000000000000000007 /* HistoryArchiveViewModel.swift in Sources */,
+				F50000000000000000000009 /* HistoryArchiveView.swift in Sources */,
+				F40000000000000000000003 /* HistorySearchViewModel.swift in Sources */,
+				F40000000000000000000005 /* HistorySearchView.swift in Sources */,
 				A10000000000000000000024 /* FeiQPeer.swift in Sources */,
 				A10000000000000000000025 /* FeiQProtocol.swift in Sources */,
 				B20000000000000000000001 /* FeiQInlineImage.swift in Sources */,
@@ -382,6 +481,15 @@
 				A10000000000000000000061 /* ChatRepository.swift in Sources */,
 				A10000000000000000000062 /* AppSettingsRepository.swift in Sources */,
 				A10000000000000000000063 /* ChatHistoryService.swift in Sources */,
+				F60000000000000000000001 /* ChatImageThumbnailService.swift in Sources */,
+				F70000000000000000000001 /* DroppedAttachmentService.swift in Sources */,
+				F80000000000000000000001 /* ConversationSettings.swift in Sources */,
+				F90000000000000000000001 /* ChatAttachmentHistory.swift in Sources */,
+				FA0000000000000000000001 /* FeiQInlineImageDecoder.swift in Sources */,
+				F90000000000000000000003 /* AttachmentHistoryViewModel.swift in Sources */,
+				F90000000000000000000005 /* AttachmentHistoryView.swift in Sources */,
+				F80000000000000000000003 /* ConversationSettingsRepository.swift in Sources */,
+				F80000000000000000000005 /* ConversationSettingsView.swift in Sources */,
 				A10000000000000000000064 /* FeiQNotificationService.swift in Sources */,
 				A10000000000000000000065 /* UserDefaultsSettingsService.swift in Sources */,
 				A1000000000000000000006E /* ChatAttachmentStorageService.swift in Sources */,

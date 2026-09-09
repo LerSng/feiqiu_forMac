@@ -9,6 +9,7 @@ struct FeiQIdentity: Equatable, Sendable {
 struct AppSettings: Equatable, Sendable {
     var identity: FeiQIdentity
     var chatLoadAnimationMode: ChatLoadAnimationMode
+    var messageNotificationSound: MessageNotificationSound = .system
 }
 
 struct ChatGroup: Identifiable, Hashable, Codable, Sendable {
@@ -86,6 +87,7 @@ enum ChatRepositoryEvent: Sendable {
     case groupMessageReceived(message: ChatMessage, group: ChatGroup)
     case groupMessageUpdated(message: ChatMessage, group: ChatGroup)
     case fileTransfersChanged(FileTransferSnapshot)
+    case historyAttachmentsChanged
     case networkStateChanged(Bool)
     case log(String)
     case notificationSelected(conversationID: String)

@@ -10,14 +10,33 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var messagesByPeer: [String: [ChatMessage]] = [:]
     @Published private(set) var receivedFilesByConversation: [String: [ChatReceivedFile]] = [:]
     @Published private(set) var unreadCountsByPeer: [String: Int] = [:]
+    @Published private(set) var conversationSettingsByID: [String: ConversationSettings] = [:]
+    @Published private(set) var savingConversationIDs: Set<String> = []
+    @Published var editingConversationSettings: ConversationSettingsTarget?
+    @Published var blockingConversation: ConversationSettingsTarget?
+    @Published var conversationManagementError: String?
+    @Published var selectedConversationTag: String?
+    @Published var showsBlockedConversationsOnly = false
     @Published private(set) var isLoadingMessages = false
     @Published private(set) var hasMoreMessages = false
+    @Published private(set) var hasLaterMessages = false
+    @Published private(set) var isBrowsingHistory = false
+    @Published private(set) var highlightedMessageID: UUID?
+    @Published private(set) var messageNavigationID = UUID()
+    @Published private(set) var isLocatingHistoryMessage = false
+    @Published var historySearch: HistorySearchViewModel?
+    @Published var historyArchive: HistoryArchiveViewModel?
+    @Published var databaseMaintenance: DatabaseMaintenanceViewModel?
+    @Published private(set) var isMaintainingDatabase = false
+    @Published private(set) var requiresDatabaseRestart = false
+    @Published var historyNavigationError: String?
     @Published private(set) var logs: [String] = []
     @Published private(set) var isRunning = false
     @Published private(set) var typingPeerIDs: Set<String> = []
     @Published private(set) var deletingMessageIDs: Set<UUID> = []
     @Published private(set) var fileTransferSnapshot = FileTransferSnapshot()
     @Published var showingFileTransfers = false
+    let attachmentHistory: AttachmentHistoryViewModel
     @Published var imagePreview: ConversationImagePreviewModel?
 
     @Published var selectedPeerID: String?
@@ -28,11 +47,17 @@ final class ChatViewModel: ObservableObject {
     @Published var imageSelectionError: String?
     @Published private(set) var isPreparingAttachment = false
     @Published private(set) var isCapturingScreenshot = false
+    @Published private(set) var isPreparingDrop = false
+    @Published private(set) var dropPreparedCount = 0
+    @Published private(set) var dropItemCount = 0
+    @Published var dropSendError: String?
     @Published var searchText = ""
     @Published var nickname: String
     @Published var hostName: String
     @Published var groupName: String
     @Published var chatLoadAnimationMode: ChatLoadAnimationMode
+    @Published var messageNotificationSound: MessageNotificationSound
+    @Published var settingsError: String?
     @Published var showingSettings = false
     @Published private(set) var windowShakeID = UUID()
     @Published private(set) var shakeCoolingDown = false
@@ -46,12 +71,24 @@ final class ChatViewModel: ObservableObject {
 
     private let repository: ChatRepository
     private let settingsRepository: AppSettingsRepository
+    private let notificationSoundService: NotificationSoundService
+    private var soundPreview: NSSound?
     private var offlineTimer: Timer?
     private var historyRequestGeneration = 0
+    private var historyNavigationGeneration = 0
+    private var receivedMessageDuringHistoryLoad = false
     private var historyMessageUpdates: [UUID: ChatMessage] = [:]
     private var deletedImageIDsByMessage: [UUID: Set<String>] = [:]
     private var deletingImageKeys = Set<String>()
     private var imagePreparationGeneration = UUID()
+    private var dropRequestID: UUID?
+    private var dropCancellation: DroppedAttachmentCancellation?
+    private var pendingDropRequests: Set<UUID> = []
+    private var pendingAttachmentOperations = 0
+    private var isRefreshingHistory = false
+    private var hasLoadedHistory = false
+    private var isLoadingHistory = false
+    private var wantsToBeOnline = true
     private var typingTimers: [String: DispatchWorkItem] = [:]
     private var localTypingPeerID: String?
     private var localTypingStopWorkItem: DispatchWorkItem?
@@ -62,13 +99,14 @@ final class ChatViewModel: ObservableObject {
     var isPreparingPastedImage: Bool { pendingImageCount > 0 }
     var draftImageCount: Int { draftAttachments.filter(\.isImage).count }
     var maximumAlbumImageCount: Int { ChatAttachmentGroup.maximumImageCount }
+    var isDatabaseUnavailable: Bool { isMaintainingDatabase || requiresDatabaseRestart }
 
     func attachmentGroups(for message: ChatMessage) -> [ChatAttachmentGroup] {
         ChatAttachmentGroup.makeGroups(from: message.attachments)
     }
 
     var canSendShake: Bool {
-        isRunning && selectedPeer?.isOnline == true && !shakeCoolingDown
+        !isDatabaseUnavailable && isRunning && selectedPeer?.isOnline == true && !shakeCoolingDown && !isSelectedConversationBlocked
     }
 
     var compatibleEmoticons: [FeiQMessageFormatter.CompatibleEmoticon] {
@@ -113,40 +151,52 @@ final class ChatViewModel: ObservableObject {
 
     var filteredPeers: [FeiQPeer] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return peers }
-        return peers.filter {
-            $0.displayName.localizedCaseInsensitiveContains(query)
-                || $0.hostName.localizedCaseInsensitiveContains(query)
-                || $0.ipAddress.localizedCaseInsensitiveContains(query)
-                || $0.group.localizedCaseInsensitiveContains(query)
+        return peers.filter { peer in
+            matchesConversationFilters(peer.id) && (query.isEmpty
+                || peer.displayName.localizedCaseInsensitiveContains(query)
+                || displayName(for: peer).localizedCaseInsensitiveContains(query)
+                || peer.hostName.localizedCaseInsensitiveContains(query)
+                || peer.ipAddress.localizedCaseInsensitiveContains(query)
+                || peer.group.localizedCaseInsensitiveContains(query)
+                || conversationSettings(for: peer.id).tags.contains { $0.localizedCaseInsensitiveContains(query) })
         }
     }
 
     var filteredGroups: [ChatGroup] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return groups }
-        return groups.filter {
-            $0.displayName.localizedCaseInsensitiveContains(query)
-                || $0.ownerName.localizedCaseInsensitiveContains(query)
-                || $0.memberIDs.contains { memberID in
-                    peers.first(where: { $0.id == memberID })?.displayName
-                        .localizedCaseInsensitiveContains(query) == true
-                }
+        return groups.filter { group in
+            matchesConversationFilters(group.id) && (query.isEmpty
+                || group.displayName.localizedCaseInsensitiveContains(query)
+                || displayName(for: group).localizedCaseInsensitiveContains(query)
+                || group.ownerName.localizedCaseInsensitiveContains(query)
+                || conversationSettings(for: group.id).tags.contains { $0.localizedCaseInsensitiveContains(query) }
+                || group.memberIDs.contains { memberID in
+                    peers.first(where: { $0.id == memberID }).map {
+                        displayName(for: $0).localizedCaseInsensitiveContains(query)
+                            || $0.displayName.localizedCaseInsensitiveContains(query)
+                    } == true
+                })
         }
     }
 
     init(
         repository: ChatRepository,
-        settingsRepository: AppSettingsRepository
+        settingsRepository: AppSettingsRepository,
+        notificationSoundService: NotificationSoundService = NotificationSoundService()
     ) {
         self.repository = repository
         self.settingsRepository = settingsRepository
+        self.notificationSoundService = notificationSoundService
+        attachmentHistory = AttachmentHistoryViewModel(search: repository.searchAttachments)
+        conversationSettingsByID = repository.conversationSettingsSnapshot
+        conversationManagementError = repository.conversationSettingsLoadError.map { "会话设置读取失败：\($0)" }
 
         let settings = settingsRepository.load()
         nickname = settings.identity.nickname
         hostName = settings.identity.hostName
         groupName = settings.identity.groupName
         chatLoadAnimationMode = settings.chatLoadAnimationMode
+        messageNotificationSound = settings.messageNotificationSound
 
         repository.onEvent = { [weak self] event in
             DispatchQueue.main.async {
@@ -155,7 +205,6 @@ final class ChatViewModel: ObservableObject {
         }
 
         loadHistory()
-        startNetwork()
         offlineTimer = Timer.scheduledTimer(
             withTimeInterval: 5,
             repeats: true
@@ -167,6 +216,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     deinit {
+        dropCancellation?.cancel()
         offlineTimer?.invalidate()
         repository.stop()
     }
@@ -183,6 +233,129 @@ final class ChatViewModel: ObservableObject {
         max(0, unreadCountsByPeer[conversationID] ?? 0)
     }
 
+    func conversationSettings(for conversationID: String) -> ConversationSettings {
+        repository.conversationSettings(for: conversationID)
+    }
+
+    var isSelectedConversationBlocked: Bool {
+        selectedConversationID.map { conversationSettings(for: $0).isBlocked } ?? false
+    }
+
+    func displayName(for peer: FeiQPeer) -> String {
+        let remark = conversationSettings(for: peer.id).remark
+        return remark.isEmpty ? peer.displayName : remark
+    }
+
+    func displayName(for group: ChatGroup) -> String {
+        let remark = conversationSettings(for: group.id).remark
+        return remark.isEmpty ? group.displayName : remark
+    }
+
+    var conversationTags: [String] {
+        let identifiers = Set(peers.map(\.id) + groups.map(\.id))
+        let tags = conversationSettingsByID.filter { identifiers.contains($0.key) }.values.flatMap(\.tags)
+        var seen = Set<String>()
+        return tags.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            .filter { seen.insert($0.lowercased()).inserted }
+    }
+
+    private func matchesConversationFilters(_ identifier: String) -> Bool {
+        let settings = conversationSettings(for: identifier)
+        if showsBlockedConversationsOnly && !settings.isBlocked { return false }
+        if let selectedConversationTag {
+            return settings.tags.contains { $0.caseInsensitiveCompare(selectedConversationTag) == .orderedSame }
+        }
+        return true
+    }
+
+    private func settingsTarget(for identifier: String) -> ConversationSettingsTarget? {
+        if let peer = peers.first(where: { $0.id == identifier }) {
+            return ConversationSettingsTarget(id: identifier, originalName: peer.displayName, isGroup: false)
+        }
+        if let group = groups.first(where: { $0.id == identifier }) {
+            return ConversationSettingsTarget(id: identifier, originalName: group.displayName, isGroup: true)
+        }
+        return nil
+    }
+
+    func editConversationSettings(_ identifier: String) {
+        editingConversationSettings = settingsTarget(for: identifier)
+    }
+
+    func toggleConversationPin(_ identifier: String) {
+        updateConversationSettings(identifier) { $0.isPinned.toggle() }
+    }
+
+    func toggleConversationMute(_ identifier: String) {
+        updateConversationSettings(identifier) { $0.isMuted.toggle() }
+    }
+
+    func requestConversationBlock(_ identifier: String) {
+        if conversationSettings(for: identifier).isBlocked {
+            setConversationBlocked(false, for: identifier)
+        } else {
+            blockingConversation = settingsTarget(for: identifier)
+        }
+    }
+
+    func setConversationBlocked(_ blocked: Bool, for identifier: String) {
+        updateConversationSettings(identifier) { $0.isBlocked = blocked }
+    }
+
+    func saveConversationDetails(_ identifier: String, remark: String, tags: String,
+                                 completion: @escaping (Result<Void, Error>) -> Void) {
+        updateConversationSettings(identifier, changes: {
+            $0.remark = remark
+            $0.tags = ConversationSettings.parseTags(tags)
+        }, completion: completion)
+    }
+
+    private func updateConversationSettings(
+        _ identifier: String, changes: (inout ConversationSettings) -> Void,
+        completion: ((Result<Void, Error>) -> Void)? = nil
+    ) {
+        guard !isDatabaseUnavailable, settingsTarget(for: identifier) != nil, !savingConversationIDs.contains(identifier) else {
+            completion?(.failure(ConversationSettingsError.unavailable))
+            return
+        }
+        var settings = conversationSettings(for: identifier)
+        changes(&settings)
+        savingConversationIDs.insert(identifier)
+        repository.saveConversationSettings(settings, for: identifier) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.savingConversationIDs.remove(identifier)
+                switch result {
+                case .success(let saved):
+                    self.conversationSettingsByID[identifier] = saved.isDefault ? nil : saved
+                    self.sortPeers()
+                    self.sortGroups()
+                    if let tag = self.selectedConversationTag,
+                       !self.conversationTags.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) {
+                        self.selectedConversationTag = nil
+                    }
+                    if saved.isBlocked {
+                        self.markMessagesRead(for: identifier)
+                        self.typingTimers[identifier]?.cancel()
+                        self.typingTimers.removeValue(forKey: identifier)
+                        self.typingPeerIDs.remove(identifier)
+                        if self.selectedConversationID == identifier {
+                            self.cancelDroppedAttachments()
+                            self.stopLocalTyping()
+                        }
+                    }
+                    if saved.suppressesAlerts, self.remoteAssistanceRequest?.peer.id == identifier {
+                        self.remoteAssistanceRequest = nil
+                    }
+                    completion?(.success(()))
+                case .failure(let error):
+                    if let completion { completion(.failure(error)) }
+                    else { self.conversationManagementError = "会话设置保存失败：\(error.localizedDescription)" }
+                }
+            }
+        }
+    }
+
     func isPeerTyping(_ peerID: String) -> Bool {
         typingPeerIDs.contains(peerID)
     }
@@ -191,7 +364,7 @@ final class ChatViewModel: ObservableObject {
     /// peer. The stop packet is debounced so Windows FeiQ does not receive a
     /// start/stop pair for every keystroke.
     func draftDidChange() {
-        guard let peer = selectedPeer else {
+        guard let peer = selectedPeer, !isSelectedConversationBlocked else {
             stopLocalTyping()
             return
         }
@@ -234,7 +407,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func markMessagesRead(for conversationID: String) {
-        guard unreadCount(for: conversationID) > 0 else { return }
+        guard !isDatabaseUnavailable, unreadCount(for: conversationID) > 0 else { return }
         unreadCountsByPeer[conversationID] = nil
         repository.setUnreadCount(0, for: conversationID)
     }
@@ -256,6 +429,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func saveGroup(name: String, memberIDs: [String], editingGroupID: String?) {
+        guard !isDatabaseUnavailable else { return }
         let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedName.isEmpty else { return }
 
@@ -294,6 +468,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func deleteGroup(_ groupID: String) {
+        guard !isDatabaseUnavailable else { return }
         if selectedGroupID == groupID {
             selectPeer(nil)
         }
@@ -353,16 +528,258 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    func makeHistoryArchiveModel(
+        mode: ChatHistoryArchiveMode = .export, query: ChatHistorySearchQuery = .init()
+    ) -> HistoryArchiveViewModel {
+        HistoryArchiveViewModel(mode: mode, query: query, repository: repository) { [weak self] in
+            self?.refreshImportedHistory()
+        }
+    }
+
+    func openHistoryArchive(mode: ChatHistoryArchiveMode) {
+        guard !isDatabaseUnavailable else { return }
+        historyArchive = makeHistoryArchiveModel(mode: mode, query: .init(conversationID: selectedConversationID))
+    }
+
+    func openDatabaseMaintenance() {
+        guard !isDatabaseUnavailable, databaseMaintenance == nil else { return }
+        databaseMaintenance = DatabaseMaintenanceViewModel(service: repository.databaseMaintenanceService,
+            authorize: { [weak self] restoring, completion in
+                guard let self else { completion(.failure(DatabaseMaintenanceError.busy)); return }
+                self.authorizeDatabaseMaintenance(restoring: restoring, completion: completion)
+            }, finish: { [weak self] attachmentsChanged, requiresRestart in
+                self?.finishDatabaseMaintenance(attachmentsChanged: attachmentsChanged, requiresRestart: requiresRestart)
+            })
+    }
+
+    private func maintenanceAvailabilityError(restoring: Bool) -> Error? {
+        if requiresDatabaseRestart { return DatabaseMaintenanceError.restartRequired }
+        if isRunning || wantsToBeOnline || !hasLoadedHistory || isLoadingHistory || isRefreshingHistory
+            || isPreparingDrop || !pendingDropRequests.isEmpty || pendingAttachmentOperations > 0
+            || isPreparingPastedImage || isPreparingAttachment || isCapturingScreenshot
+            || !deletingImageKeys.isEmpty || !deletingMessageIDs.isEmpty || !savingConversationIDs.isEmpty
+            || historyArchive?.isBusy == true || fileTransferSnapshot.unfinishedCount > 0 {
+            return DatabaseMaintenanceError.busy
+        }
+        if restoring && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draftAttachments.isEmpty) {
+            return DatabaseMaintenanceError.unsentDraft
+        }
+        return nil
+    }
+
+    private func authorizeDatabaseMaintenance(restoring: Bool, completion: @escaping (Result<Set<String>, Error>) -> Void) {
+        guard !isDatabaseUnavailable else { completion(.failure(DatabaseMaintenanceError.busy)); return }
+        if let error = maintenanceAvailabilityError(restoring: restoring) { completion(.failure(error)); return }
+        isMaintainingDatabase = true
+        repository.beginDatabaseMaintenance { [self] result in
+            DispatchQueue.main.async { [self] in
+                switch result {
+                case .failure(let error):
+                    isMaintainingDatabase = false
+                    completion(.failure(error))
+                case .success(let protected):
+                    if let error = maintenanceAvailabilityError(restoring: restoring) {
+                        repository.endDatabaseMaintenance(requiresRestart: false)
+                        isMaintainingDatabase = false
+                        completion(.failure(error))
+                        return
+                    }
+                    completion(.success(protected.union(draftAttachments.map(\.localPath))))
+                }
+            }
+        }
+    }
+
+    private func finishDatabaseMaintenance(attachmentsChanged: Bool, requiresRestart: Bool) {
+        repository.endDatabaseMaintenance(requiresRestart: requiresRestart)
+        requiresDatabaseRestart = requiresRestart
+        isMaintainingDatabase = false
+        if requiresRestart {
+            wantsToBeOnline = false
+            isRunning = false
+            historySearch?.cancel()
+            attachmentHistory.stop()
+            cancelHistoryNavigation()
+            imagePreview = nil
+        } else if attachmentsChanged {
+            imagePreview = nil
+            receivedFilesByConversation.removeAll()
+            returnToLatestMessages()
+            if let conversationID = selectedConversationID { loadReceivedFiles(for: conversationID) }
+            attachmentHistory.refresh()
+        }
+    }
+
+    func refreshImportedHistory() {
+        guard !requiresDatabaseRestart else { return }
+        isRefreshingHistory = true
+        repository.loadSnapshot { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isRefreshingHistory = false
+                guard !self.requiresDatabaseRestart else { return }
+                switch result {
+                case .success(let snapshot):
+                    self.mergeRestoredPeers(snapshot.peers.map { peer in
+                        var restored = peer
+                        restored.isOnline = false
+                        return restored
+                    })
+                    self.repository.restorePeers(self.peers)
+                    self.groups = snapshot.groups
+                    self.sortGroups()
+                    self.repository.restoreGroups(self.groups)
+                    for (identifier, count) in snapshot.unreadCountsByPeer where self.unreadCountsByPeer[identifier] == nil {
+                        self.unreadCountsByPeer[identifier] = count
+                    }
+                    if let conversationID = self.selectedConversationID {
+                        self.returnToLatestMessages()
+                        self.loadReceivedFiles(for: conversationID)
+                    }
+                    self.appendLog("已刷新导入后的联系人、群聊和历史消息")
+                case .failure(let error): self.appendLog("导入完成，但刷新历史记录失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func openHistorySearch(for conversationID: String? = nil) {
+        guard !isDatabaseUnavailable else { return }
+        cancelHistoryNavigation()
+        historyNavigationError = nil
+        historySearch = HistorySearchViewModel(conversationID: conversationID, search: repository.searchMessages)
+    }
+
+    func cancelHistoryNavigation() {
+        historyNavigationGeneration += 1
+        isLocatingHistoryMessage = false
+    }
+
+    func revealHistoryMessage(_ result: ChatHistorySearchResult) {
+        revealHistoryMessage(
+            conversationID: result.conversationID, messageID: result.id, isGroup: result.isGroup,
+            closingDownloadCenter: false
+        )
+    }
+
+    func revealHistoryAttachment(_ result: ChatAttachmentHistoryResult) {
+        revealHistoryMessage(
+            conversationID: result.conversationID, messageID: result.messageID, isGroup: result.isGroup,
+            closingDownloadCenter: true
+        )
+    }
+
+    private func revealHistoryMessage(
+        conversationID: String, messageID: UUID, isGroup: Bool, closingDownloadCenter: Bool
+    ) {
+        guard !isLocatingHistoryMessage else { return }
+        historyNavigationError = nil
+        isLocatingHistoryMessage = true
+        historyNavigationGeneration += 1
+        let requestGeneration = historyNavigationGeneration
+        repository.loadMessageContext(
+            for: conversationID, messageID: messageID, limit: Self.messagePageSize
+        ) { [weak self] response in
+            DispatchQueue.main.async {
+                guard let self, self.historyNavigationGeneration == requestGeneration else { return }
+                self.isLocatingHistoryMessage = false
+                switch response {
+                case .success(let context):
+                    let exists = isGroup
+                        ? self.groups.contains { $0.id == conversationID }
+                        : self.peers.contains { $0.id == conversationID }
+                    guard exists else {
+                        self.historyNavigationError = ChatHistorySearchError.messageUnavailable.localizedDescription
+                        return
+                    }
+                    let currentMessages = self.messagesByPeer[conversationID] ?? []
+                    let updates = Dictionary(uniqueKeysWithValues: currentMessages.map { ($0.id, $0) })
+                    self.activateConversation(
+                        peerID: isGroup ? nil : conversationID,
+                        groupID: isGroup ? conversationID : nil,
+                        markRead: true, loadMessages: false
+                    )
+                    self.historyRequestGeneration += 1
+                    self.historyMessageUpdates.removeAll()
+                    self.messagesByPeer[conversationID] = context.messages.map {
+                        (updates[$0.id] ?? $0).removingImages(withIDs: self.deletedImageIDsByMessage[$0.id] ?? [])
+                    }
+                    self.hasMoreMessages = context.hasEarlier
+                    self.hasLaterMessages = context.hasLater
+                    self.isLoadingMessages = false
+                    self.isBrowsingHistory = true
+                    self.highlightedMessageID = messageID
+                    self.messageNavigationID = UUID()
+                    self.historySearch = nil
+                    if closingDownloadCenter { self.showingFileTransfers = false }
+                case .failure(let error):
+                    self.historyNavigationError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func returnToLatestMessages() {
+        guard let conversationID = selectedConversationID else { return }
+        historyRequestGeneration += 1
+        messagesByPeer[conversationID] = []
+        hasMoreMessages = false
+        hasLaterMessages = false
+        isBrowsingHistory = false
+        highlightedMessageID = nil
+        markMessagesRead(for: conversationID)
+        loadRecentMessages(for: conversationID)
+        messageNavigationID = UUID()
+    }
+
+    func loadLaterMessages(
+        for conversationID: String,
+        after message: ChatMessage,
+        completion: (() -> Void)? = nil
+    ) {
+        guard selectedConversationID == conversationID, hasLaterMessages, !isLoadingMessages else { return }
+        historyMessageUpdates.removeAll()
+        receivedMessageDuringHistoryLoad = false
+        isLoadingMessages = true
+        let requestGeneration = historyRequestGeneration
+        repository.loadLaterMessages(for: conversationID, after: message, limit: Self.messagePageSize) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, self.selectedConversationID == conversationID,
+                      self.historyRequestGeneration == requestGeneration else { return }
+                switch result {
+                case .success(let page):
+                    self.messagesByPeer[conversationID] = self.mergeMessages(
+                        page.messages.map { self.historyMessageUpdates[$0.id] ?? $0 },
+                        with: self.messagesByPeer[conversationID] ?? []
+                    )
+                    self.hasLaterMessages = page.hasMore || self.receivedMessageDuringHistoryLoad
+                    completion?()
+                case .failure(let error):
+                    self.appendLog("后续聊天记录读取失败：\(error.localizedDescription)")
+                }
+                self.isLoadingMessages = false
+            }
+        }
+    }
+
     func startNetwork() {
+        guard !isDatabaseUnavailable else { return }
+        wantsToBeOnline = true
+        guard hasLoadedHistory else {
+            if !isLoadingHistory { loadHistory() }
+            return
+        }
         repository.start(identity: currentIdentity)
     }
 
     func stopNetwork() {
+        guard !isDatabaseUnavailable else { return }
+        wantsToBeOnline = false
         repository.stop()
-        isRunning = false
     }
 
     func setOnlineStatus(_ isOnline: Bool) {
+        guard !isDatabaseUnavailable else { return }
         if isOnline {
             if isRunning {
                 repository.announce()
@@ -377,11 +794,17 @@ final class ChatViewModel: ObservableObject {
     }
 
     func refreshDiscovery() {
+        guard !isDatabaseUnavailable else { return }
         repository.refreshDiscovery()
         appendLog("手动发送局域网发现广播")
     }
 
-    func saveSettings() {
+    @discardableResult
+    func saveSettings() -> Bool {
+        guard !isDatabaseUnavailable else { return false }
+        settingsError = nil
+        do { try notificationSoundService.prepare(messageNotificationSound) }
+        catch { settingsError = "提示音保存失败：" + error.localizedDescription; return false }
         nickname = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
         hostName = hostName.trimmingCharacters(in: .whitespacesAndNewlines)
         groupName = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -391,15 +814,169 @@ final class ChatViewModel: ObservableObject {
         settingsRepository.save(
             AppSettings(
                 identity: currentIdentity,
-                chatLoadAnimationMode: chatLoadAnimationMode
+                chatLoadAnimationMode: chatLoadAnimationMode,
+                messageNotificationSound: messageNotificationSound
             )
         )
         repository.updateIdentity(currentIdentity)
         repository.announce()
         appendLog("已保存本机资料，并刷新上线信息")
+        return true
+    }
+
+    func previewNotificationSound() {
+        stopNotificationSoundPreview()
+        settingsError = nil
+        if messageNotificationSound == .none { return }
+        if messageNotificationSound == .system { NSSound.beep(); return }
+        guard let url = notificationSoundService.sourceURL(for: messageNotificationSound),
+              let sound = NSSound(contentsOf: url, byReference: false), sound.play() else {
+            settingsError = NotificationSoundError.previewFailed.localizedDescription
+            return
+        }
+        soundPreview = sound
+    }
+
+    func stopNotificationSoundPreview() {
+        soundPreview?.stop()
+        soundPreview = nil
+    }
+
+    func reloadNotificationSoundSetting() {
+        messageNotificationSound = settingsRepository.load().messageNotificationSound
+    }
+
+    var attachmentDropUnavailableReason: String? {
+        if isDatabaseUnavailable { return "数据库正在维护，请稍后再发送" }
+        if isPreparingDrop { return "正在准备上一批附件，请稍候或取消后重试" }
+        if selectedConversationID == nil { return "请先选择联系人或群聊" }
+        if isSelectedConversationBlocked { return ConversationSettingsError.blocked.localizedDescription }
+        if !isRunning { return "局域网服务未启动，暂时无法发送" }
+        if let peer = selectedPeer {
+            return peer.isOnline && !peer.ipAddress.isEmpty ? nil : "联系人已离线，暂时无法发送"
+        }
+        if let group = selectedGroup {
+            return members(for: group.id).contains { $0.isOnline && !$0.ipAddress.isEmpty && !conversationSettings(for: $0.id).isBlocked }
+                ? nil : "群聊没有在线成员，暂时无法发送"
+        }
+        return "当前会话不可用"
+    }
+
+    @discardableResult
+    func sendDroppedAttachments(_ providers: [NSItemProvider]) -> Bool {
+        guard !providers.isEmpty, providers.contains(where: ChatAttachmentDrop.supports) else { return false }
+        if let reason = attachmentDropUnavailableReason {
+            dropSendError = reason
+            return false
+        }
+        guard providers.count <= DroppedAttachmentService.maximumItemCount else {
+            dropSendError = DroppedAttachmentError.tooManyItems.localizedDescription
+            return false
+        }
+        let destination: DroppedMessageDestination
+        if let peer = selectedPeer {
+            destination = .peer(peer)
+        } else if let group = selectedGroup {
+            destination = .group(group, members(for: group.id).filter { $0.isOnline && !$0.ipAddress.isEmpty && !conversationSettings(for: $0.id).isBlocked })
+        } else {
+            return false
+        }
+        let requestID = UUID()
+        pendingDropRequests.insert(requestID)
+        dropRequestID = requestID
+        dropSendError = nil
+        isPreparingDrop = true
+        dropPreparedCount = 0
+        dropItemCount = providers.count
+        dropCancellation = repository.prepareDroppedAttachments(providers) { [weak self] completed, total in
+            DispatchQueue.main.async {
+                guard let self, self.dropRequestID == requestID else { return }
+                self.dropPreparedCount = completed
+                self.dropItemCount = total
+            }
+        } completion: { [weak self, repository] result in
+            DispatchQueue.main.async {
+                self?.pendingDropRequests.remove(requestID)
+                guard let self, self.dropRequestID == requestID else {
+                    if case .success(let prepared) = result {
+                        repository.discardPreparedAttachments(prepared.attachments) { _ in }
+                    }
+                    return
+                }
+                self.dropRequestID = nil
+                self.dropCancellation = nil
+                self.isPreparingDrop = false
+                switch result {
+                case .success(let prepared):
+                    guard let destination = self.validatedDropDestination(destination) else {
+                        repository.discardPreparedAttachments(prepared.attachments) { _ in }
+                        self.dropSendError = "会话或在线状态已变化，本批附件未发送，请重新拖入。"
+                        return
+                    }
+                    for batch in ChatAttachmentGroup.makeGroups(from: prepared.attachments) {
+                        self.sendDroppedBatch(batch.attachments, to: destination)
+                    }
+                    if !prepared.failures.isEmpty {
+                        let details = prepared.failures.prefix(8).joined(separator: "\n")
+                        let remainder = prepared.failures.count > 8 ? "\n另有 \(prepared.failures.count - 8) 项失败，详见网络日志。" : ""
+                        self.dropSendError = "已提交发送 \(prepared.attachments.count) 个附件，\(prepared.failures.count) 项未发送：\n\(details)\(remainder)"
+                        for failure in prepared.failures { self.appendLog("拖拽附件准备失败：\(failure)") }
+                    }
+                case .failure(let error):
+                    self.dropSendError = error.localizedDescription
+                }
+            }
+        }
+        return true
+    }
+
+    func cancelDroppedAttachments() {
+        dropRequestID = nil
+        dropCancellation?.cancel()
+        dropCancellation = nil
+        isPreparingDrop = false
+        dropPreparedCount = 0
+        dropItemCount = 0
+    }
+
+    private enum DroppedMessageDestination {
+        case peer(FeiQPeer)
+        case group(ChatGroup, [FeiQPeer])
+    }
+
+    private func validatedDropDestination(_ destination: DroppedMessageDestination) -> DroppedMessageDestination? {
+        guard isRunning, !isSelectedConversationBlocked else { return nil }
+        switch destination {
+        case .peer(let original):
+            guard let peer = selectedPeer, peer.id == original.id, peer.isOnline else { return nil }
+            return .peer(peer)
+        case .group(let original, let originalMembers):
+            guard let group = selectedGroup, group.id == original.id, Set(group.memberIDs) == Set(original.memberIDs) else { return nil }
+            let currentMembers = members(for: group.id).filter { peer in
+                peer.isOnline && !conversationSettings(for: peer.id).isBlocked
+                    && originalMembers.contains { $0.id == peer.id }
+            }
+            return currentMembers.isEmpty ? nil : .group(group, currentMembers)
+        }
+    }
+
+    private func sendDroppedBatch(_ attachments: [ChatAttachment], to destination: DroppedMessageDestination) {
+        switch destination {
+        case .peer(let peer):
+            let message = ChatMessage(direction: .outgoing, text: "", senderName: nickname,
+                                      recipientName: peer.displayName, attachments: attachments)
+            appendMessageToCurrentConversation(message, conversationID: peer.id)
+            repository.sendMessage(message, to: peer, unreadCount: unreadCount(for: peer.id))
+        case .group(let group, let members):
+            let message = ChatMessage(direction: .outgoing, text: "", senderName: nickname,
+                                      recipientName: group.displayName, attachments: attachments)
+            appendMessageToCurrentConversation(message, conversationID: group.id)
+            repository.sendGroupMessage(message, to: group, members: members)
+        }
     }
 
     func sendDraft() {
+        guard !isDatabaseUnavailable, !isSelectedConversationBlocked else { return }
         let displayText = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = draftAttachments
         guard !isPreparingPastedImage,
@@ -468,7 +1045,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func reserveImageSlots(_ count: Int) -> Bool {
-        guard selectedConversationID != nil, count > 0 else { return false }
+        guard !isDatabaseUnavailable, selectedConversationID != nil, count > 0 else { return false }
         let available = maximumAlbumImageCount - draftImageCount - pendingImageCount
         guard count <= available else {
             imageSelectionError = "每条消息最多合并 \(maximumAlbumImageCount) 张照片，当前还可添加 \(max(0, available)) 张。"
@@ -476,10 +1053,12 @@ final class ChatViewModel: ObservableObject {
         }
         imageSelectionError = nil
         pendingImageCount += count
+        pendingAttachmentOperations += count
         return true
     }
 
     private func finishPreparingImage(_ result: Result<ChatAttachment, Error>, generation: UUID) {
+        pendingAttachmentOperations = max(0, pendingAttachmentOperations - 1)
         guard generation == imagePreparationGeneration, selectedConversationID != nil else {
             if case .success(let attachment) = result {
                 repository.deleteDraftImage(attachment) { _ in }
@@ -501,13 +1080,15 @@ final class ChatViewModel: ObservableObject {
     /// passed through the same attachment pipeline as a pasted image, so it
     /// appears in the draft area and is persisted only after sending.
     func captureScreenshot() {
-        guard selectedConversationID != nil, !isCapturingScreenshot else { return }
+        guard !isDatabaseUnavailable, selectedConversationID != nil, !isCapturingScreenshot else { return }
 
         isCapturingScreenshot = true
+        pendingAttachmentOperations += 1
         repository.captureScreenshot { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isCapturingScreenshot = false
+                self.pendingAttachmentOperations = max(0, self.pendingAttachmentOperations - 1)
 
                 switch result {
                 case .success(let data):
@@ -524,6 +1105,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func removeDraftAttachment(_ attachmentID: String) {
+        guard !isDatabaseUnavailable else { return }
         guard let attachment = draftAttachments.first(where: { $0.id == attachmentID }) else { return }
         guard attachment.isImage else {
             draftAttachments.removeAll { $0.id == attachmentID }
@@ -557,6 +1139,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func deleteImage(_ attachmentID: String, from message: ChatMessage, conversationID: String) {
+        guard !isDatabaseUnavailable else { return }
         let key = message.id.uuidString + ":" + attachmentID
         guard deletingImageKeys.insert(key).inserted else { return }
         repository.deleteImage(
@@ -586,6 +1169,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func deleteMessage(_ message: ChatMessage, conversationID: String) {
+        guard !isDatabaseUnavailable else { return }
         guard deletingMessageIDs.insert(message.id).inserted else { return }
         let currentMessages = messagesByPeer[conversationID] ?? []
         guard currentMessages.contains(where: { $0.id == message.id }) else {
@@ -619,7 +1203,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func chooseAndAddImages() {
-        guard selectedConversationID != nil else { return }
+        guard !isDatabaseUnavailable, selectedConversationID != nil else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -642,7 +1226,7 @@ final class ChatViewModel: ObservableObject {
     /// Documents/飞秋 Mac/Files directory before the user presses Send, so a
     /// later network transfer does not depend on the original picker URL.
     func chooseAndAddFiles() {
-        guard selectedConversationID != nil else { return }
+        guard !isDatabaseUnavailable, selectedConversationID != nil else { return }
 
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -667,9 +1251,11 @@ final class ChatViewModel: ObservableObject {
             return
         }
 
+        pendingAttachmentOperations += 1
         repository.prepareOutgoingFile(from: urls[index]) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.pendingAttachmentOperations = max(0, self.pendingAttachmentOperations - 1)
 
                 guard self.selectedConversationID != nil else {
                     self.isPreparingAttachment = false
@@ -693,10 +1279,12 @@ final class ChatViewModel: ObservableObject {
     }
 
     func setFileTransferQueuePaused(_ paused: Bool) {
+        guard !isDatabaseUnavailable else { return }
         repository.fileTransferCenter.setPaused(paused)
     }
 
     func setFileTransferConcurrency(_ count: Int) {
+        guard !isDatabaseUnavailable else { return }
         repository.fileTransferCenter.setMaximumConcurrentTransfers(count)
     }
 
@@ -705,6 +1293,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func retryFileTransfer(_ identifier: UUID) {
+        guard !isDatabaseUnavailable else { return }
         repository.fileTransferCenter.retry(identifier)
     }
 
@@ -720,16 +1309,17 @@ final class ChatViewModel: ObservableObject {
         repository.fileTransferCenter.remove(identifier)
     }
 
-    func cancelAllFileTransfers() {
-        repository.fileTransferCenter.cancelAll()
+    func cancelAllFileTransfers(direction: FileTransferDirection? = nil) {
+        repository.fileTransferCenter.cancelAll(direction: direction)
     }
 
-    func retryFailedFileTransfers() {
-        repository.fileTransferCenter.retryFailed()
+    func retryFailedFileTransfers(direction: FileTransferDirection? = nil) {
+        guard !isDatabaseUnavailable else { return }
+        repository.fileTransferCenter.retryFailed(direction: direction)
     }
 
-    func clearFinishedFileTransfers() {
-        repository.fileTransferCenter.clearFinished()
+    func clearFinishedFileTransfers(direction: FileTransferDirection? = nil) {
+        repository.fileTransferCenter.clearFinished(direction: direction)
     }
 
     private var currentIdentity: FeiQIdentity {
@@ -741,6 +1331,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func receiveDirectMessage(_ message: ChatMessage, from peer: FeiQPeer, isShake: Bool = false) {
+        guard !conversationSettings(for: peer.id).isBlocked else { return }
         let isViewing = isViewingConversation(for: peer)
         appendMessageToCurrentConversation(message, conversationID: peer.id)
         appendReceivedFiles(
@@ -757,32 +1348,38 @@ final class ChatViewModel: ObservableObject {
             unreadCount: unreadCount(for: peer.id)
         )
         let belongsToGroup = groups.contains { group in
-            group.memberIDs.contains(peer.id)
+            group.memberIDs.contains(peer.id) && !conversationSettings(for: group.id).isBlocked
         }
         if !isViewing, isShake || !belongsToGroup {
             repository.notifyIncomingMessage(
                 text: notificationPreview(for: message),
-                from: peer.displayName,
+                from: displayName(for: peer),
                 conversationID: peer.id
             )
         }
     }
 
     private func handle(_ event: ChatRepositoryEvent) {
+        guard !requiresDatabaseRestart else { return }
         switch event {
         case .fileTransfersChanged(let snapshot):
             fileTransferSnapshot = snapshot
 
+        case .historyAttachmentsChanged:
+            attachmentHistory.refresh()
+
         case .peerShook(let peer):
+            guard !conversationSettings(for: peer.id).isBlocked else { return }
             mergePeer(peer)
             let message = ChatMessage(
                 direction: .incoming, text: "对方向你发送了抖一抖",
                 senderName: peer.displayName, recipientName: nickname
             )
             receiveDirectMessage(message, from: peer, isShake: true)
-            windowShakeID = UUID()
+            if !conversationSettings(for: peer.id).isMuted { windowShakeID = UUID() }
 
         case .remoteAssistanceRequested(let request):
+            guard !conversationSettings(for: request.peer.id).suppressesAlerts else { return }
             mergePeer(request.peer)
             remoteAssistanceRequest = request
             appendLog(
@@ -791,11 +1388,12 @@ final class ChatViewModel: ObservableObject {
 
         case .peerUpdated(let peer):
             mergePeer(peer)
-            if selectedConversationID == nil, peer.isOnline {
+            if selectedConversationID == nil, peer.isOnline, !conversationSettings(for: peer.id).isBlocked {
                 selectPeer(peer.id)
             }
 
         case .peerTyping(let peer, let isTyping):
+            guard !conversationSettings(for: peer.id).isBlocked else { return }
             typingTimers[peer.id]?.cancel()
             typingTimers.removeValue(forKey: peer.id)
             if isTyping {
@@ -817,6 +1415,7 @@ final class ChatViewModel: ObservableObject {
             receiveDirectMessage(message, from: peer)
 
         case .messageUpdated(let message, let peer):
+            guard !conversationSettings(for: peer.id).isBlocked else { return }
             let message = message.removingImages(withIDs: deletedImageIDsByMessage[message.id] ?? [])
             updateImagePreview(message, conversationID: peer.id)
             // Completing an existing image is not a new incoming message:
@@ -831,12 +1430,13 @@ final class ChatViewModel: ObservableObject {
             repository.persistMessage(message, for: peer, unreadCount: unreadCount(for: peer.id))
 
         case .groupMessageReceived(let message, let group):
+            guard !conversationSettings(for: group.id).isBlocked else { return }
             if !groups.contains(where: { $0.id == group.id }) {
                 groups.append(group)
                 sortGroups()
             }
 
-            let isViewing = NSApp.isActive && selectedGroupID == group.id
+            let isViewing = NSApp.isActive && selectedGroupID == group.id && !isBrowsingHistory
             appendMessageToCurrentConversation(
                 message,
                 conversationID: group.id
@@ -858,12 +1458,13 @@ final class ChatViewModel: ObservableObject {
                 let sender = message.senderName.isEmpty ? group.displayName : message.senderName
                 repository.notifyIncomingMessage(
                     text: notificationPreview(for: message),
-                    from: group.displayName + " · " + sender,
+                    from: displayName(for: group) + " · " + sender,
                     conversationID: group.id
                 )
             }
 
         case .groupMessageUpdated(let message, let group):
+            guard !conversationSettings(for: group.id).isBlocked else { return }
             let message = message.removingImages(withIDs: deletedImageIDsByMessage[message.id] ?? [])
             updateImagePreview(message, conversationID: group.id)
             if let index = messagesByPeer[group.id]?.firstIndex(where: { $0.id == message.id }) {
@@ -877,6 +1478,7 @@ final class ChatViewModel: ObservableObject {
 
         case .networkStateChanged(let running):
             isRunning = running
+            if !running { cancelDroppedAttachments() }
 
         case .log(let message):
             appendLog(message)
@@ -906,8 +1508,10 @@ final class ChatViewModel: ObservableObject {
     private func activateConversation(
         peerID: String?,
         groupID: String?,
-        markRead: Bool
+        markRead: Bool,
+        loadMessages: Bool = true
     ) {
+        guard !isDatabaseUnavailable else { return }
         if selectedPeerID == peerID, selectedGroupID == groupID {
             if markRead, let conversationID = groupID ?? peerID {
                 markMessagesRead(for: conversationID)
@@ -915,6 +1519,7 @@ final class ChatViewModel: ObservableObject {
             return
         }
 
+        cancelDroppedAttachments()
         selectedPeerID = peerID
         selectedGroupID = groupID
         imagePreview = nil
@@ -931,6 +1536,9 @@ final class ChatViewModel: ObservableObject {
         historyRequestGeneration += 1
         isLoadingMessages = false
         hasMoreMessages = false
+        hasLaterMessages = false
+        isBrowsingHistory = false
+        highlightedMessageID = nil
 
         guard let conversationID = groupID ?? peerID else { return }
         receivedFilesByConversation[conversationID] = []
@@ -938,7 +1546,7 @@ final class ChatViewModel: ObservableObject {
         if markRead {
             markMessagesRead(for: conversationID)
         }
-        loadRecentMessages(for: conversationID)
+        if loadMessages { loadRecentMessages(for: conversationID) }
         loadReceivedFiles(for: conversationID)
     }
 
@@ -1024,6 +1632,16 @@ final class ChatViewModel: ObservableObject {
         updateImagePreview(message, conversationID: conversationID)
         guard selectedConversationID == conversationID else { return }
 
+        if isBrowsingHistory {
+            if message.direction == .outgoing {
+                returnToLatestMessages()
+            } else {
+                hasLaterMessages = true
+                receivedMessageDuringHistoryLoad = true
+                return
+            }
+        }
+
         var currentMessages = messagesByPeer[conversationID] ?? []
         currentMessages.append(message)
         if currentMessages.count > Self.inMemoryMessageLimit {
@@ -1076,12 +1694,16 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func loadHistory() {
+        guard !isLoadingHistory else { return }
+        isLoadingHistory = true
         repository.loadSnapshot { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.isLoadingHistory = false
 
                 switch result {
                 case .success(let snapshot):
+                    self.hasLoadedHistory = true
                     let restoredPeers = snapshot.peers.map { storedPeer in
                         var peer = storedPeer
                         // Presence is only valid for the current process lifetime.
@@ -1100,7 +1722,7 @@ final class ChatViewModel: ObservableObject {
                     for (peerID, count) in self.unreadCountsByPeer {
                         unreadCounts[peerID] = max(count, unreadCounts[peerID] ?? 0)
                     }
-                    self.unreadCountsByPeer = unreadCounts
+                    self.unreadCountsByPeer = unreadCounts.filter { !self.conversationSettings(for: $0.key).isBlocked }
                     self.appendLog(
                         "已加载 \(snapshot.totalMessageCount) 条聊天记录，采用 SQLite 分页存储：\(self.repository.historyLocationDescription)"
                     )
@@ -1109,9 +1731,11 @@ final class ChatViewModel: ObservableObject {
                        !self.isLoadingMessages {
                         self.loadRecentMessages(for: selectedConversationID)
                     }
+                    if self.wantsToBeOnline { self.startNetwork() }
 
                 case .failure(let error):
                     self.appendLog("聊天记录数据库读取失败：\(error.localizedDescription)")
+                    self.conversationManagementError = "无法恢复会话资料，未启动网络以避免屏蔽失效：\(error.localizedDescription)"
                 }
             }
         }
@@ -1119,6 +1743,7 @@ final class ChatViewModel: ObservableObject {
 
     private func mergePeer(_ peer: FeiQPeer) {
         if let index = peers.firstIndex(where: { $0.id == peer.id }) {
+            guard peers[index].lastSeen <= peer.lastSeen else { return }
             peers[index] = peer
         } else {
             peers.append(peer)
@@ -1132,7 +1757,7 @@ final class ChatViewModel: ObservableObject {
         )
         for livePeer in peers {
             if let storedPeer = mergedPeers[livePeer.id] {
-                mergedPeers[livePeer.id] = livePeer.isOnline ? livePeer : storedPeer
+                mergedPeers[livePeer.id] = livePeer.isOnline || livePeer.lastSeen >= storedPeer.lastSeen ? livePeer : storedPeer
             } else {
                 mergedPeers[livePeer.id] = livePeer
             }
@@ -1142,27 +1767,36 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func markOfflinePeers() {
+        guard !isDatabaseUnavailable else { return }
         repository.markOfflinePeers(
             before: Date().addingTimeInterval(-75)
         )
     }
 
     private func isViewingConversation(for peer: FeiQPeer) -> Bool {
-        NSApp.isActive && selectedGroupID == nil && selectedPeerID == peer.id
+        NSApp.isActive && selectedGroupID == nil && selectedPeerID == peer.id && !isBrowsingHistory
     }
 
     private func sortPeers() {
-        peers.sort {
-            if $0.isOnline != $1.isOnline {
-                return $0.isOnline && !$1.isOnline
+        peers.sort { first, second in
+            let firstPinned = conversationSettings(for: first.id).isPinned
+            let secondPinned = conversationSettings(for: second.id).isPinned
+            if firstPinned != secondPinned { return firstPinned }
+            if first.isOnline != second.isOnline {
+                return first.isOnline && !second.isOnline
             }
-            return $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+            let comparison = displayName(for: first).localizedStandardCompare(displayName(for: second))
+            return comparison == .orderedSame ? first.id < second.id : comparison == .orderedAscending
         }
     }
 
     private func sortGroups() {
-        groups.sort {
-            $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+        groups.sort { first, second in
+            let firstPinned = conversationSettings(for: first.id).isPinned
+            let secondPinned = conversationSettings(for: second.id).isPinned
+            if firstPinned != secondPinned { return firstPinned }
+            let comparison = displayName(for: first).localizedStandardCompare(displayName(for: second))
+            return comparison == .orderedSame ? first.id < second.id : comparison == .orderedAscending
         }
     }
 

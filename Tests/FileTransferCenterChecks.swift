@@ -69,6 +69,7 @@ enum FileTransferCenterChecks {
     static func main() {
         checkOrderingProgressAndRetry()
         checkDirectionIsolationAndLimits()
+        checkDirectionalBulkActions()
         checkDeletionAndClearing()
         checkEmptyFileAndCompletionRace()
         print("File transfer center checks passed")
@@ -187,6 +188,36 @@ enum FileTransferCenterChecks {
         snapshots.waitFor { $0.unfinishedCount == 0 && $0.transfers.allSatisfy { $0.state == .cancelled } }
         center.setMaximumConcurrentTransfers(100)
         snapshots.waitFor { $0.maximumConcurrentTransfers == 6 }
+    }
+
+    private static func checkDirectionalBulkActions() {
+        let center = FileTransferCenter()
+        let snapshots = TransferSnapshots()
+        center.observe(snapshots.record)
+        let incoming = ControlledTransfer()
+        let outgoing = ControlledTransfer()
+        let incomingID = center.enqueue(attachment: attachment("incoming-bulk"), direction: .incoming,
+                                        peerName: "Win", ipAddress: "192.0.2.1", operation: incoming.start)
+        let outgoingID = center.enqueue(attachment: attachment("outgoing-bulk"), direction: .outgoing,
+                                        peerName: "Win", ipAddress: "192.0.2.1", operation: outgoing.start)
+        incoming.attempt().completion(.failure(FeiQFileTransferError.fileNotFound))
+        outgoing.attempt().completion(.failure(FeiQFileTransferError.fileNotFound))
+        snapshots.waitFor { $0.failedCount == 2 }
+        center.setPaused(true)
+        center.retryFailed(direction: .incoming)
+        snapshots.waitFor { state(incomingID, in: $0) == .queued && state(outgoingID, in: $0) == .failed }
+        center.retry(outgoingID)
+        snapshots.waitFor { $0.queuedCount == 2 }
+        center.cancelAll(direction: .incoming)
+        snapshots.waitFor { state(incomingID, in: $0) == .cancelled && state(outgoingID, in: $0) == .queued }
+        center.clearFinished(direction: .outgoing)
+        center.snapshot { snapshot in
+            precondition(snapshot.transfers.count == 2, "Sending cleanup must not remove received tasks")
+        }
+        center.clearFinished(direction: .incoming)
+        snapshots.waitFor { $0.transfers.count == 1 && state(outgoingID, in: $0) == .queued }
+        center.cancelAll()
+        snapshots.waitFor { state(outgoingID, in: $0) == .cancelled }
     }
 
     private static func checkDeletionAndClearing() {

@@ -97,7 +97,7 @@ struct ChatAttachment: Identifiable, Codable, Hashable, Sendable {
     }
 
     var isAvailable: Bool {
-        FileManager.default.fileExists(atPath: localPath)
+        !localPath.isEmpty && FileManager.default.fileExists(atPath: localPath)
     }
 
     var isImage: Bool {

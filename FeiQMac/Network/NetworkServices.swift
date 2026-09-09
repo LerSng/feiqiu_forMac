@@ -18,9 +18,17 @@ protocol FeiQNetworkEventSource: AnyObject {
 protocol DiscoveryService: AnyObject {
     func start(identity: FeiQIdentity)
     func stop()
+    func stop(completion: @escaping () -> Void)
     func updateIdentity(_ identity: FeiQIdentity)
     func announce()
     func replyToEntry(from ipAddress: String)
+}
+
+extension DiscoveryService {
+    func stop(completion: @escaping () -> Void) {
+        stop()
+        completion()
+    }
 }
 
 final class DefaultDiscoveryService: DiscoveryService {
@@ -40,6 +48,10 @@ final class DefaultDiscoveryService: DiscoveryService {
 
     func stop() {
         networkService.stop()
+    }
+
+    func stop(completion: @escaping () -> Void) {
+        networkService.stop(completion: completion)
     }
 
     func updateIdentity(_ identity: FeiQIdentity) {

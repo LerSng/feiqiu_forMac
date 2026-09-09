@@ -7,8 +7,42 @@
 
 import Foundation
 
-protocol MessageRepository: AnyObject {
+protocol MessageRepository: DatabaseMaintenanceAccess {
     var locationDescription: String { get }
+
+    func loadArchive(
+        matching query: ChatHistorySearchQuery,
+        completion: @escaping (Result<ChatHistoryArchive, Error>) -> Void
+    )
+    func importArchive(
+        _ archive: ChatHistoryArchive,
+        completion: @escaping (Result<ChatHistoryImportSummary, Error>) -> Void
+    )
+
+    func searchAttachments(
+        matching query: ChatAttachmentHistoryQuery,
+        before cursor: ChatAttachmentHistoryCursor?,
+        limit: Int,
+        completion: @escaping (Result<ChatAttachmentHistoryPage, Error>) -> Void
+    )
+    func searchMessages(
+        matching query: ChatHistorySearchQuery,
+        before cursor: ChatHistorySearchCursor?,
+        limit: Int,
+        completion: @escaping (Result<ChatHistorySearchPage, Error>) -> Void
+    )
+    func loadMessageContext(
+        for conversationID: String,
+        messageID: UUID,
+        limit: Int,
+        completion: @escaping (Result<ChatHistoryContext, Error>) -> Void
+    )
+    func loadLaterMessages(
+        for conversationID: String,
+        after message: ChatMessage,
+        limit: Int,
+        completion: @escaping (Result<ChatHistoryPage, Error>) -> Void
+    )
 
     func loadConversationImages(
         for conversationID: String,
@@ -69,6 +103,65 @@ final class DefaultMessageRepository: MessageRepository {
 
     init(historyService: ChatHistoryService) {
         self.historyService = historyService
+    }
+
+    var maintenanceRequiresRestart: Bool { historyService.maintenanceRequiresRestart }
+
+    func withMaintenanceDatabase<Value>(requiresRestart: Bool,
+        operation: @escaping (OpaquePointer, URL) throws -> Value,
+        completion: @escaping (Result<Value, Error>) -> Void
+    ) {
+        historyService.withMaintenanceDatabase(requiresRestart: requiresRestart, operation: operation, completion: completion)
+    }
+
+    func loadArchive(
+        matching query: ChatHistorySearchQuery,
+        completion: @escaping (Result<ChatHistoryArchive, Error>) -> Void
+    ) {
+        historyService.loadArchive(matching: query, completion: completion)
+    }
+
+    func importArchive(
+        _ archive: ChatHistoryArchive,
+        completion: @escaping (Result<ChatHistoryImportSummary, Error>) -> Void
+    ) {
+        historyService.importArchive(archive, completion: completion)
+    }
+
+    func searchAttachments(
+        matching query: ChatAttachmentHistoryQuery,
+        before cursor: ChatAttachmentHistoryCursor?,
+        limit: Int,
+        completion: @escaping (Result<ChatAttachmentHistoryPage, Error>) -> Void
+    ) {
+        historyService.searchAttachments(matching: query, before: cursor, limit: limit, completion: completion)
+    }
+
+    func searchMessages(
+        matching query: ChatHistorySearchQuery,
+        before cursor: ChatHistorySearchCursor?,
+        limit: Int,
+        completion: @escaping (Result<ChatHistorySearchPage, Error>) -> Void
+    ) {
+        historyService.searchMessages(matching: query, before: cursor, limit: limit, completion: completion)
+    }
+
+    func loadMessageContext(
+        for conversationID: String,
+        messageID: UUID,
+        limit: Int,
+        completion: @escaping (Result<ChatHistoryContext, Error>) -> Void
+    ) {
+        historyService.loadMessageContext(for: conversationID, messageID: messageID, limit: limit, completion: completion)
+    }
+
+    func loadLaterMessages(
+        for conversationID: String,
+        after message: ChatMessage,
+        limit: Int,
+        completion: @escaping (Result<ChatHistoryPage, Error>) -> Void
+    ) {
+        historyService.loadLaterMessages(for: conversationID, after: message, limit: limit, completion: completion)
     }
 
     func saveMessage(

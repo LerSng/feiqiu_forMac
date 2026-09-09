@@ -13,6 +13,9 @@ import UniformTypeIdentifiers
 struct PasteAwareTextEditor: NSViewRepresentable {
     @Binding var text: String
     let onPasteImage: (Data, String?) -> Void
+    var allowsAttachmentDrop = false
+    var onDropAttachments: (([NSItemProvider]) -> Bool)?
+    var onDropTargeted: ((Bool) -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -22,6 +25,10 @@ struct PasteAwareTextEditor: NSViewRepresentable {
         let view = PasteAwareNSTextView()
         view.delegate = context.coordinator
         view.onPasteImage = onPasteImage
+        view.allowsAttachmentDrop = allowsAttachmentDrop
+        view.onDropAttachments = onDropAttachments
+        view.onDropTargeted = onDropTargeted
+        view.registerForDraggedTypes(ChatAttachmentDrop.pasteboardTypes)
         view.string = text
         view.isRichText = false
         view.importsGraphics = false
@@ -52,6 +59,9 @@ struct PasteAwareTextEditor: NSViewRepresentable {
         context.coordinator.parent = self
         guard let textView = nsView.documentView as? PasteAwareNSTextView else { return }
         textView.onPasteImage = onPasteImage
+        textView.allowsAttachmentDrop = allowsAttachmentDrop
+        textView.onDropAttachments = onDropAttachments
+        textView.onDropTargeted = onDropTargeted
         if textView.string != text {
             let selection = textView.selectedRange()
             textView.string = text
@@ -80,6 +90,49 @@ struct PasteAwareTextEditor: NSViewRepresentable {
 
 final class PasteAwareNSTextView: NSTextView {
     var onPasteImage: ((Data, String?) -> Void)?
+    var allowsAttachmentDrop = false
+    var onDropAttachments: (([NSItemProvider]) -> Bool)?
+    var onDropTargeted: ((Bool) -> Void)?
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard ChatAttachmentDrop.containsAttachments(in: sender.draggingPasteboard) else {
+            return super.draggingEntered(sender)
+        }
+        onDropTargeted?(true)
+        return allowsAttachmentDrop ? .copy : []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard ChatAttachmentDrop.containsAttachments(in: sender.draggingPasteboard) else {
+            return super.draggingUpdated(sender)
+        }
+        onDropTargeted?(true)
+        return allowsAttachmentDrop ? .copy : []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDropTargeted?(false)
+        super.draggingExited(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if ChatAttachmentDrop.containsAttachments(in: sender.draggingPasteboard) { return allowsAttachmentDrop }
+        return super.prepareForDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onDropTargeted?(false)
+        guard ChatAttachmentDrop.containsAttachments(in: sender.draggingPasteboard) else {
+            return super.performDragOperation(sender)
+        }
+        guard allowsAttachmentDrop else { return false }
+        return onDropAttachments?(ChatAttachmentDrop.providers(from: sender.draggingPasteboard)) ?? false
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        onDropTargeted?(false)
+        super.concludeDragOperation(sender)
+    }
 
     func scrollCaretIntoView() {
         let selectedRange = selectedRange()

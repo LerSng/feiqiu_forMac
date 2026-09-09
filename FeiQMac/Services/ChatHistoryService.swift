@@ -1,7 +1,45 @@
 import Foundation
 
-protocol ChatHistoryService: AnyObject {
+protocol ChatHistoryService: DatabaseMaintenanceAccess {
     var locationDescription: String { get }
+
+    func loadConversationSettings() throws -> [String: ConversationSettings]
+    func saveConversationSettings(_ settings: ConversationSettings, for conversationID: String,
+                                  completion: @escaping (Result<Void, Error>) -> Void)
+
+    func loadArchive(
+        matching query: ChatHistorySearchQuery,
+        completion: @escaping (Result<ChatHistoryArchive, Error>) -> Void
+    )
+    func importArchive(
+        _ archive: ChatHistoryArchive,
+        completion: @escaping (Result<ChatHistoryImportSummary, Error>) -> Void
+    )
+
+    func searchAttachments(
+        matching query: ChatAttachmentHistoryQuery,
+        before cursor: ChatAttachmentHistoryCursor?,
+        limit: Int,
+        completion: @escaping (Result<ChatAttachmentHistoryPage, Error>) -> Void
+    )
+    func searchMessages(
+        matching query: ChatHistorySearchQuery,
+        before cursor: ChatHistorySearchCursor?,
+        limit: Int,
+        completion: @escaping (Result<ChatHistorySearchPage, Error>) -> Void
+    )
+    func loadMessageContext(
+        for conversationID: String,
+        messageID: UUID,
+        limit: Int,
+        completion: @escaping (Result<ChatHistoryContext, Error>) -> Void
+    )
+    func loadLaterMessages(
+        for conversationID: String,
+        after message: ChatMessage,
+        limit: Int,
+        completion: @escaping (Result<ChatHistoryPage, Error>) -> Void
+    )
 
     func loadConversationImages(
         for conversationID: String,
@@ -62,6 +100,38 @@ final class SQLiteChatHistoryService: ChatHistoryService {
 
     init(store: ChatHistoryStore) {
         self.store = store
+    }
+
+    var maintenanceRequiresRestart: Bool { store.maintenanceRequiresRestart }
+
+    func withMaintenanceDatabase<Value>(requiresRestart: Bool,
+        operation: @escaping (OpaquePointer, URL) throws -> Value,
+        completion: @escaping (Result<Value, Error>) -> Void
+    ) {
+        store.withMaintenanceDatabase(requiresRestart: requiresRestart, operation: operation, completion: completion)
+    }
+
+    func loadConversationSettings() throws -> [String: ConversationSettings] {
+        try store.loadConversationSettings()
+    }
+
+    func saveConversationSettings(_ settings: ConversationSettings, for conversationID: String,
+                                  completion: @escaping (Result<Void, Error>) -> Void) {
+        store.saveConversationSettings(settings, for: conversationID, completion: completion)
+    }
+
+    func loadArchive(
+        matching query: ChatHistorySearchQuery,
+        completion: @escaping (Result<ChatHistoryArchive, Error>) -> Void
+    ) {
+        store.loadArchive(matching: query, completion: completion)
+    }
+
+    func importArchive(
+        _ archive: ChatHistoryArchive,
+        completion: @escaping (Result<ChatHistoryImportSummary, Error>) -> Void
+    ) {
+        store.importArchive(archive, completion: completion)
     }
 
     static func makeDefault() -> SQLiteChatHistoryService {
@@ -139,6 +209,42 @@ final class SQLiteChatHistoryService: ChatHistoryService {
             limit: limit,
             completion: completion
         )
+    }
+
+    func searchAttachments(
+        matching query: ChatAttachmentHistoryQuery,
+        before cursor: ChatAttachmentHistoryCursor?,
+        limit: Int,
+        completion: @escaping (Result<ChatAttachmentHistoryPage, Error>) -> Void
+    ) {
+        store.searchAttachments(matching: query, before: cursor, limit: limit, completion: completion)
+    }
+
+    func searchMessages(
+        matching query: ChatHistorySearchQuery,
+        before cursor: ChatHistorySearchCursor?,
+        limit: Int,
+        completion: @escaping (Result<ChatHistorySearchPage, Error>) -> Void
+    ) {
+        store.searchMessages(matching: query, before: cursor, limit: limit, completion: completion)
+    }
+
+    func loadMessageContext(
+        for conversationID: String,
+        messageID: UUID,
+        limit: Int,
+        completion: @escaping (Result<ChatHistoryContext, Error>) -> Void
+    ) {
+        store.loadMessageContext(for: conversationID, messageID: messageID, limit: limit, completion: completion)
+    }
+
+    func loadLaterMessages(
+        for conversationID: String,
+        after message: ChatMessage,
+        limit: Int,
+        completion: @escaping (Result<ChatHistoryPage, Error>) -> Void
+    ) {
+        store.loadLaterMessages(for: conversationID, after: message, limit: limit, completion: completion)
     }
 
     func savePeer(_ peer: FeiQPeer) {

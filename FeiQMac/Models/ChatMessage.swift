@@ -112,6 +112,12 @@ struct ChatAttachment: Identifiable, Codable, Hashable, Sendable {
         kind.systemImageName
     }
 
+    var fileExtensionLabel: String? {
+        let normalizedName = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = (normalizedName as NSString).pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+        return suffix.isEmpty ? nil : suffix.uppercased()
+    }
+
     var fileSizeDescription: String {
         ByteCountFormatter.string(
             fromByteCount: fileSize,

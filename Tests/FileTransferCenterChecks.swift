@@ -67,12 +67,39 @@ private final class ControlledTransfer {
 @main
 enum FileTransferCenterChecks {
     static func main() {
+        checkFileExtensionLabels()
         checkOrderingProgressAndRetry()
         checkDirectionIsolationAndLimits()
         checkDirectionalBulkActions()
         checkDeletionAndClearing()
         checkEmptyFileAndCompletionRace()
         print("File transfer center checks passed")
+    }
+
+    private static func checkFileExtensionLabels() {
+        let cases: [(String, String?)] = [
+            ("合同.docx", "DOCX"),
+            ("数据表.XlSx", "XLSX"),
+            ("资料.zip", "ZIP"),
+            ("资料.7z", "7Z"),
+            ("演示.pptx", "PPTX"),
+            ("报告.final.pdf", "PDF"),
+            ("archive.tar.gz", "GZ"),
+            ("文档.docx  ", "DOCX"),
+            ("工作.表格", "表格"),
+            ("file.verylongextension", "VERYLONGEXTENSION"),
+            ("README", nil),
+            (".gitignore", nil),
+            ("无后缀.", nil),
+            ("", nil)
+        ]
+        for (fileName, expected) in cases {
+            let file = ChatAttachment(id: fileName, kind: .file, fileName: fileName, fileSize: 100,
+                                      modifiedAt: 0, fileAttributes: 1, localPath: "/missing/cache.tmp",
+                                      mimeType: "application/octet-stream")
+            precondition(file.fileExtensionLabel == expected,
+                         "File labels must use the original filename, even when the cached file is renamed or missing: \(fileName)")
+        }
     }
 
     private static func attachment(_ name: String, size: Int64 = 100) -> ChatAttachment {

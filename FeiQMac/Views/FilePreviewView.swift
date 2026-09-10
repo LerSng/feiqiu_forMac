@@ -85,18 +85,33 @@ struct FileAttachmentView: View {
     }
 
     private var fileIcon: some View {
-        Image(systemName: attachment.systemImageName)
-            .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(FeiQUI.accent)
-            .frame(width: 38, height: 38)
-            .background(
-                LinearGradient(
-                    colors: [FeiQUI.accentSoft, FeiQUI.accent.opacity(0.08)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ),
-                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-            )
+        ZStack {
+            Image(systemName: attachment.systemImageName)
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(FeiQUI.accent)
+                .offset(y: -3)
+
+            Text(attachment.fileExtensionLabel ?? "FILE")
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+                .truncationMode(.tail)
+                .padding(.horizontal, 2)
+                .frame(width: 32, height: 13)
+                .background(FeiQUI.actionFill, in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+                .offset(y: 10)
+        }
+        .frame(width: 38, height: 38)
+        .background(
+            LinearGradient(
+                colors: [FeiQUI.accentSoft, FeiQUI.accent.opacity(0.08)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+        )
+        .accessibilityHidden(true)
     }
 
     private var fileDetails: some View {
@@ -133,9 +148,8 @@ struct FileAttachmentView: View {
     }
 
     private var fileTypeDescription: String {
-        let pathExtension = attachment.localURL.pathExtension
-        if !pathExtension.isEmpty {
-            return pathExtension.uppercased()
+        if let label = attachment.fileExtensionLabel {
+            return label
         }
         guard let mimeSuffix = attachment.mimeType.split(separator: "/").last,
               !mimeSuffix.isEmpty,
